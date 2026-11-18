@@ -22,15 +22,18 @@ namespace
 // same-origin deployment never sends these OPTIONS requests.
 bool isTaskRoute(const std::string &path)
 {
-    constexpr std::array<std::string_view, 10> paths = {
+    constexpr std::array<std::string_view, 13> paths = {
         "/api/task/add",
         "/api/task/subtask",
         "/api/task/note",
+        "/api/task/comment",
         "/api/task/status",
         "/api/task/detail",
         "/api/task/all",
         "/api/task/mine",
         "/api/task/completed",
+        "/api/project/add",
+        "/api/project/all",
         "/api/user/all",
         "/api/notification/all"};
     return std::find(paths.begin(), paths.end(), path) != paths.end();
@@ -38,11 +41,13 @@ bool isTaskRoute(const std::string &path)
 
 std::string expectedMethod(const std::string &path)
 {
-    constexpr std::array<std::string_view, 4> postPaths = {
+    constexpr std::array<std::string_view, 6> postPaths = {
         "/api/task/add",
         "/api/task/subtask",
         "/api/task/note",
-        "/api/task/status"};
+        "/api/task/comment",
+        "/api/task/status",
+        "/api/project/add"};
     return std::find(postPaths.begin(), postPaths.end(), path) != postPaths.end()
                ? "POST"
                : "GET";
@@ -160,6 +165,14 @@ void registerTaskRoutes(const std::shared_ptr<TaskController> &controller)
         {drogon::Post, "taskmanager::ErrorMiddleware"});
 
     app.registerHandler(
+        "/api/task/comment",
+        [controller](const drogon::HttpRequestPtr &request,
+                     drogon::AdviceCallback &&callback) {
+            controller->addComment(request, std::move(callback));
+        },
+        {drogon::Post, "taskmanager::ErrorMiddleware"});
+
+    app.registerHandler(
         "/api/task/status",
         [controller](const drogon::HttpRequestPtr &request,
                      drogon::AdviceCallback &&callback) {
@@ -196,6 +209,23 @@ void registerTaskRoutes(const std::shared_ptr<TaskController> &controller)
         [controller](const drogon::HttpRequestPtr &request,
                      drogon::AdviceCallback &&callback) {
             controller->completedTasks(request, std::move(callback));
+        },
+        {drogon::Get, "taskmanager::ErrorMiddleware"});
+
+    // Projects: /api/project/*
+    app.registerHandler(
+        "/api/project/add",
+        [controller](const drogon::HttpRequestPtr &request,
+                     drogon::AdviceCallback &&callback) {
+            controller->addProject(request, std::move(callback));
+        },
+        {drogon::Post, "taskmanager::ErrorMiddleware"});
+
+    app.registerHandler(
+        "/api/project/all",
+        [controller](const drogon::HttpRequestPtr &request,
+                     drogon::AdviceCallback &&callback) {
+            controller->allProjects(request, std::move(callback));
         },
         {drogon::Get, "taskmanager::ErrorMiddleware"});
 

@@ -194,18 +194,19 @@ TaskRecord taskFromStatement(const Statement &statement)
     TaskRecord task;
     task.id = statement.int64Column(0);
     task.parentTaskId = statement.optInt64Column(1);
-    task.title = statement.textColumn(2);
-    task.description = statement.optTextColumn(3);
-    task.status = statement.textColumn(4);
-    task.type = statement.textColumn(5);
-    task.discipline = statement.textColumn(6);
-    task.dueAt = statement.optTextColumn(7);
-    task.startAt = statement.optTextColumn(8);
-    task.assigneeId = statement.optInt64Column(9);
+    task.projectId = statement.int64Column(2);
+    task.title = statement.textColumn(3);
+    task.description = statement.optTextColumn(4);
+    task.status = statement.textColumn(5);
+    task.type = statement.textColumn(6);
+    task.discipline = statement.textColumn(7);
+    task.dueAt = statement.optTextColumn(8);
+    task.startAt = statement.optTextColumn(9);
     task.createdById = statement.int64Column(10);
     task.version = statement.int64Column(11);
     task.createdAt = statement.textColumn(12);
     task.updatedAt = statement.textColumn(13);
+    // assigneeIds are loaded separately via listAssigneeIds
     return task;
 }
 
@@ -224,9 +225,24 @@ NotificationRecord notificationFromStatement(const Statement &statement)
 }
 
 constexpr const char *kTaskColumns =
-    "id, parent_task_id, title, description, status, type, discipline, "
-    "due_at, start_at, assignee_id, created_by_id, version, created_at, "
+    "id, parent_task_id, project_id, title, description, status, type, "
+    "discipline, due_at, start_at, created_by_id, version, created_at, "
     "updated_at";
+
+std::vector<std::int64_t> loadAssigneeIds(Connection &connection,
+                                          std::int64_t taskId)
+{
+    Statement stmt(connection.get(),
+                   "SELECT user_id FROM task_assignees WHERE task_id = ?1 "
+                   "ORDER BY assigned_at, user_id");
+    stmt.bindInt64(1, taskId);
+    std::vector<std::int64_t> ids;
+    while (stmt.step() == SQLITE_ROW)
+    {
+        ids.push_back(stmt.int64Column(0));
+    }
+    return ids;
+}
 
 std::vector<TaskRecord> queryTasks(const std::string &databasePath,
                                    const std::string &whereOrderClause,
@@ -245,6 +261,10 @@ std::vector<TaskRecord> queryTasks(const std::string &databasePath,
     {
         tasks.push_back(taskFromStatement(statement));
     }
+    for (auto &task : tasks)
+    {
+        task.assigneeIds = loadAssigneeIds(connection, task.id);
+    }
     return tasks;
 }
 
@@ -258,7 +278,9 @@ TaskRecord taskById(Connection &connection, std::int64_t id)
     {
         throw std::runtime_error("Created task could not be read back");
     }
-    return taskFromStatement(statement);
+    auto task = taskFromStatement(statement);
+    task.assigneeIds = loadAssigneeIds(connection, task.id);
+    return task;
 }
 
 TaskNoteRecord noteFromStatement(const Statement &statement)
@@ -276,14 +298,12 @@ TaskNoteRecord noteFromStatement(const Statement &statement)
 constexpr const char *kNoteColumns =
     "id, task_id, author_id, body, created_at, updated_at";
 
-// Inserts a task row and returns the new id. Shared by createTask/createSubtask;
-// the caller owns the surrounding transaction and constraint handling.
 std::int64_t insertTask(Connection &connection, const NewTask &task)
 {
     Statement insert(
         connection.get(),
         "INSERT INTO tasks (title, description, status, type, discipline, "
-        "due_at, start_at, assignee_id, parent_task_id, created_by_id) "
+        "due_at, start_at, parent_task_id, created_by_id, project_id) "
         "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)");
     insert.bindText(1, task.title);
     insert.bindOptText(2, task.description);
@@ -292,11 +312,23 @@ std::int64_t insertTask(Connection &connection, const NewTask &task)
     insert.bindText(5, task.discipline);
     insert.bindOptText(6, task.dueAt);
     insert.bindOptText(7, task.startAt);
-    insert.bindOptInt64(8, task.assigneeId);
-    insert.bindOptInt64(9, task.parentTaskId);
-    insert.bindInt64(10, task.createdById);
+    insert.bindOptInt64(8, task.parentTaskId);
+    insert.bindInt64(9, task.createdById);
+    insert.bindInt64(10, task.projectId);
     insert.step();
-    return sqlite3_last_insert_rowid(connection.get());
+    const std::int64_t taskId = sqlite3_last_insert_rowid(connection.get());
+
+    for (const auto userId : task.assigneeIds)
+    {
+        Statement assignee(
+            connection.get(),
+            "INSERT INTO task_assignees (task_id, user_id) VALUES (?1, ?2)");
+        assignee.bindInt64(1, taskId);
+        assignee.bindInt64(2, userId);
+        assignee.step();
+    }
+
+    return taskId;
 }
 
 // Appends a row to the task_events audit log. event_type must be one of the
@@ -556,10 +588,24 @@ std::vector<TaskRecord> TaskRepository::listAllTasks()
 std::vector<TaskRecord> TaskRepository::listTasksByAssignee(
     std::int64_t assigneeId)
 {
-    return queryTasks(databasePath_,
-                      "WHERE assignee_id = ?1 ORDER BY due_at IS NULL, due_at, "
-                      "created_at DESC",
-                      assigneeId);
+    Connection connection(databasePath_);
+    Statement statement(
+        connection.get(),
+        std::string("SELECT ") + kTaskColumns +
+            " FROM tasks WHERE id IN "
+            "(SELECT task_id FROM task_assignees WHERE user_id = ?1) "
+            "ORDER BY due_at IS NULL, due_at, created_at DESC");
+    statement.bindInt64(1, assigneeId);
+    std::vector<TaskRecord> tasks;
+    while (statement.step() == SQLITE_ROW)
+    {
+        tasks.push_back(taskFromStatement(statement));
+    }
+    for (auto &task : tasks)
+    {
+        task.assigneeIds = loadAssigneeIds(connection, task.id);
+    }
+    return tasks;
 }
 
 std::vector<TaskRecord> TaskRepository::listCompletedTasks()
@@ -567,6 +613,234 @@ std::vector<TaskRecord> TaskRepository::listCompletedTasks()
     return queryTasks(databasePath_,
                       "WHERE status = 'done' ORDER BY updated_at DESC",
                       std::nullopt);
+}
+
+std::vector<TaskRecord> TaskRepository::listTasksByProject(
+    std::int64_t projectId)
+{
+    return queryTasks(databasePath_,
+                      "WHERE project_id = ?1 ORDER BY created_at DESC",
+                      projectId);
+}
+
+// --- Projects ---
+
+ProjectRecord TaskRepository::createProject(const NewProject &project)
+{
+    Connection connection(databasePath_);
+    connection.execute("BEGIN IMMEDIATE");
+    try
+    {
+        Statement insert(
+            connection.get(),
+            "INSERT INTO projects (name, description, created_by_id) "
+            "VALUES (?1, ?2, ?3)");
+        insert.bindText(1, project.name);
+        insert.bindOptText(2, project.description);
+        insert.bindInt64(3, project.createdById);
+        insert.step();
+
+        const std::int64_t id = sqlite3_last_insert_rowid(connection.get());
+        Statement select(
+            connection.get(),
+            "SELECT id, name, description, created_by_id, created_at, "
+            "updated_at FROM projects WHERE id = ?1");
+        select.bindInt64(1, id);
+        if (select.step() != SQLITE_ROW)
+        {
+            throw std::runtime_error("Created project could not be read back");
+        }
+        ProjectRecord record;
+        record.id = select.int64Column(0);
+        record.name = select.textColumn(1);
+        record.description = select.optTextColumn(2);
+        record.createdById = select.optInt64Column(3);
+        record.createdAt = select.textColumn(4);
+        record.updatedAt = select.textColumn(5);
+        connection.execute("COMMIT");
+        return record;
+    }
+    catch (...)
+    {
+        const int errorCode = sqlite3_extended_errcode(connection.get());
+        connection.execute("ROLLBACK");
+        if ((errorCode & 0xff) == SQLITE_CONSTRAINT)
+        {
+            throw std::invalid_argument(
+                "A project with that name already exists");
+        }
+        throw;
+    }
+}
+
+std::vector<ProjectRecord> TaskRepository::listProjects()
+{
+    Connection connection(databasePath_);
+    Statement statement(
+        connection.get(),
+        "SELECT id, name, description, created_by_id, created_at, updated_at "
+        "FROM projects ORDER BY name COLLATE NOCASE");
+    std::vector<ProjectRecord> projects;
+    while (statement.step() == SQLITE_ROW)
+    {
+        ProjectRecord record;
+        record.id = statement.int64Column(0);
+        record.name = statement.textColumn(1);
+        record.description = statement.optTextColumn(2);
+        record.createdById = statement.optInt64Column(3);
+        record.createdAt = statement.textColumn(4);
+        record.updatedAt = statement.textColumn(5);
+        projects.push_back(record);
+    }
+    return projects;
+}
+
+std::optional<ProjectRecord> TaskRepository::findProject(std::int64_t id)
+{
+    Connection connection(databasePath_);
+    Statement statement(
+        connection.get(),
+        "SELECT id, name, description, created_by_id, created_at, updated_at "
+        "FROM projects WHERE id = ?1");
+    statement.bindInt64(1, id);
+    if (statement.step() != SQLITE_ROW)
+    {
+        return std::nullopt;
+    }
+    ProjectRecord record;
+    record.id = statement.int64Column(0);
+    record.name = statement.textColumn(1);
+    record.description = statement.optTextColumn(2);
+    record.createdById = statement.optInt64Column(3);
+    record.createdAt = statement.textColumn(4);
+    record.updatedAt = statement.textColumn(5);
+    return record;
+}
+
+// --- Comments ---
+
+CommentRecord TaskRepository::addComment(const NewComment &comment)
+{
+    Connection connection(databasePath_);
+    connection.execute("BEGIN IMMEDIATE");
+    try
+    {
+        Statement insert(
+            connection.get(),
+            "INSERT INTO comments (task_id, author_id, parent_comment_id, body)"
+            " VALUES (?1, ?2, ?3, ?4)");
+        insert.bindInt64(1, comment.taskId);
+        insert.bindInt64(2, comment.authorId);
+        insert.bindOptInt64(3, comment.parentCommentId);
+        insert.bindText(4, comment.body);
+        insert.step();
+
+        const std::int64_t id = sqlite3_last_insert_rowid(connection.get());
+        Statement select(
+            connection.get(),
+            "SELECT id, task_id, author_id, parent_comment_id, body, "
+            "created_at, updated_at FROM comments WHERE id = ?1");
+        select.bindInt64(1, id);
+        if (select.step() != SQLITE_ROW)
+        {
+            throw std::runtime_error("Created comment could not be read back");
+        }
+        CommentRecord record;
+        record.id = select.int64Column(0);
+        record.taskId = select.int64Column(1);
+        record.authorId = select.int64Column(2);
+        record.parentCommentId = select.optInt64Column(3);
+        record.body = select.textColumn(4);
+        record.createdAt = select.textColumn(5);
+        record.updatedAt = select.textColumn(6);
+        connection.execute("COMMIT");
+        return record;
+    }
+    catch (...)
+    {
+        const int errorCode = sqlite3_extended_errcode(connection.get());
+        connection.execute("ROLLBACK");
+        if ((errorCode & 0xff) == SQLITE_CONSTRAINT)
+        {
+            throw std::invalid_argument(
+                "Invalid comment: the task or parent comment does not exist");
+        }
+        throw;
+    }
+}
+
+std::vector<CommentRecord> TaskRepository::listComments(std::int64_t taskId)
+{
+    Connection connection(databasePath_);
+    Statement statement(
+        connection.get(),
+        "SELECT id, task_id, author_id, parent_comment_id, body, created_at, "
+        "updated_at FROM comments WHERE task_id = ?1 ORDER BY created_at, id");
+    statement.bindInt64(1, taskId);
+    std::vector<CommentRecord> comments;
+    while (statement.step() == SQLITE_ROW)
+    {
+        CommentRecord record;
+        record.id = statement.int64Column(0);
+        record.taskId = statement.int64Column(1);
+        record.authorId = statement.int64Column(2);
+        record.parentCommentId = statement.optInt64Column(3);
+        record.body = statement.textColumn(4);
+        record.createdAt = statement.textColumn(5);
+        record.updatedAt = statement.textColumn(6);
+        comments.push_back(record);
+    }
+    return comments;
+}
+
+std::optional<CommentRecord> TaskRepository::findComment(std::int64_t id)
+{
+    Connection connection(databasePath_);
+    Statement statement(
+        connection.get(),
+        "SELECT id, task_id, author_id, parent_comment_id, body, created_at, "
+        "updated_at FROM comments WHERE id = ?1");
+    statement.bindInt64(1, id);
+    if (statement.step() != SQLITE_ROW)
+    {
+        return std::nullopt;
+    }
+    CommentRecord record;
+    record.id = statement.int64Column(0);
+    record.taskId = statement.int64Column(1);
+    record.authorId = statement.int64Column(2);
+    record.parentCommentId = statement.optInt64Column(3);
+    record.body = statement.textColumn(4);
+    record.createdAt = statement.textColumn(5);
+    record.updatedAt = statement.textColumn(6);
+    return record;
+}
+
+// --- Notifications ---
+
+void TaskRepository::createNotification(std::int64_t recipientId,
+                                        std::int64_t actorId,
+                                        std::int64_t taskId,
+                                        const std::string &type,
+                                        const std::string &message)
+{
+    Connection connection(databasePath_);
+    Statement insert(
+        connection.get(),
+        "INSERT INTO notifications (recipient_id, actor_id, task_id, "
+        "notification_type, message) VALUES (?1, ?2, ?3, ?4, ?5)");
+    insert.bindInt64(1, recipientId);
+    insert.bindInt64(2, actorId);
+    insert.bindInt64(3, taskId);
+    insert.bindText(4, type);
+    insert.bindText(5, message);
+    insert.step();
+}
+
+std::vector<std::int64_t> TaskRepository::listAssigneeIds(std::int64_t taskId)
+{
+    Connection connection(databasePath_);
+    return loadAssigneeIds(connection, taskId);
 }
 
 }  // namespace taskmanager

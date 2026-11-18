@@ -19,6 +19,12 @@ class TaskController
                     drogon::AdviceCallback &&callback);
     void addNote(const drogon::HttpRequestPtr &request,
                  drogon::AdviceCallback &&callback);
+    void addComment(const drogon::HttpRequestPtr &request,
+                    drogon::AdviceCallback &&callback);
+    void addProject(const drogon::HttpRequestPtr &request,
+                    drogon::AdviceCallback &&callback);
+    void allProjects(const drogon::HttpRequestPtr &request,
+                     drogon::AdviceCallback &&callback);
     void changeStatus(const drogon::HttpRequestPtr &request,
                       drogon::AdviceCallback &&callback);
     void taskDetail(const drogon::HttpRequestPtr &request,

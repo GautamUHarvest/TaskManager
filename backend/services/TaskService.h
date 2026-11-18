@@ -21,6 +21,13 @@ class TaskService
   public:
     TaskService(AuthService &auth, TaskRepository &repository);
 
+    // Projects. project_id is optional on task creation; when omitted the task
+    // falls under the default "Unidentified" project (id 1).
+    ProjectRecord addProject(const std::string &accessToken,
+                             const std::string &name,
+                             const std::optional<std::string> &description);
+    std::vector<ProjectRecord> allProjects(const std::string &accessToken);
+
     TaskRecord addTask(const std::string &accessToken,
                        const std::string &title,
                        const std::optional<std::string> &description,
@@ -29,8 +36,9 @@ class TaskService
                        const std::optional<std::string> &discipline,
                        const std::optional<std::string> &dueAt,
                        const std::optional<std::string> &startAt,
-                       const std::optional<std::int64_t> &assigneeId,
-                       const std::optional<std::int64_t> &parentTaskId);
+                       const std::vector<std::int64_t> &assigneeIds,
+                       const std::optional<std::int64_t> &parentTaskId,
+                       const std::optional<std::int64_t> &projectId);
     // Creates a subtask under an existing parent task. parent_task_id is
     // required (unlike addTask, where it is optional).
     TaskRecord addSubtask(const std::string &accessToken,
@@ -42,16 +50,23 @@ class TaskService
                           const std::optional<std::string> &discipline,
                           const std::optional<std::string> &dueAt,
                           const std::optional<std::string> &startAt,
-                          const std::optional<std::int64_t> &assigneeId);
+                          const std::vector<std::int64_t> &assigneeIds,
+                          const std::optional<std::int64_t> &projectId);
     // Adds a free-text note to an existing task, authored by the token's user.
     TaskNoteRecord addNote(const std::string &accessToken,
                            std::int64_t taskId,
                            const std::string &body);
+    // Adds a comment (or a threaded reply when parentCommentId is set) to a
+    // task, and notifies every assignee of that task except the author.
+    CommentRecord addComment(const std::string &accessToken,
+                             std::int64_t taskId,
+                             const std::string &body,
+                             const std::optional<std::int64_t> &parentCommentId);
     // Changes an existing task's status to one of the allowed values.
     TaskRecord changeStatus(const std::string &accessToken,
                             std::int64_t taskId,
                             const std::string &status);
-    // Returns a task with its direct subtasks and notes. Throws
+    // Returns a task with its direct subtasks, notes, and comments. Throws
     // std::invalid_argument ("Task not found") if the id does not exist.
     TaskDetail taskDetail(const std::string &accessToken, std::int64_t taskId);
     std::vector<UserRecord> allUsers(const std::string &accessToken);

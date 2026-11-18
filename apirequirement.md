@@ -4,7 +4,7 @@ This document lists every HTTP endpoint the backend exposes, the request data ea
 needs, and the exact JSON each returns. It is the contract the Flutter frontend
 integrates against.
 
-_Last updated: 2026-11-16._
+_Last updated: 2026-11-18._
 
 ---
 
@@ -47,11 +47,25 @@ root.
 { "id": 1, "employee_id": "EMP-001", "email": "person@uharvest.in", "display_name": "Person Name" }
 ```
 
+**project**
+```json
+{
+  "id": 2,
+  "name": "Apollo",
+  "description": "Rocket programme",
+  "created_by_id": 1,
+  "created_at": "2026-11-18T10:52:37.433Z",
+  "updated_at": "2026-11-18T10:52:37.433Z"
+}
+```
+Project `id` `1` is the built-in **"Unidentified"** project; its `created_by_id` is `null` (system-owned, no human creator). For user-created projects `created_by_id` is the creator's user id. Every task belongs to exactly one project; tasks created without a `project_id` fall under project `1`.
+
 **task** (nullable fields come back as JSON `null`)
 ```json
 {
   "id": 12,
   "parent_task_id": null,
+  "project_id": 1,
   "title": "Write Q4 report",
   "description": "Draft and circulate",
   "status": "in_progress",
@@ -59,13 +73,14 @@ root.
   "discipline": "mechanical",
   "due_at": "2026-12-01T09:00:00Z",
   "start_at": "2026-11-20T09:00:00Z",
-  "assignee_id": 1,
+  "assignee_ids": [1, 3],
   "created_by_id": 1,
   "version": 1,
   "created_at": "2026-11-16T10:52:37.433Z",
   "updated_at": "2026-11-16T10:52:37.433Z"
 }
 ```
+`assignee_ids` is an array of user ids (a task can have **zero or more** assignees); it is `[]` when the task is unassigned. `project_id` is always present and non-null.
 `status` is always one of: `todo`, `in_progress`, `blocked`, `done`, `cancelled`.
 
 `type` is one of: `design`, `test`, `decide`, `measure`, `select`, `buy`, `admin`, `code`, `make`, `data`, `doc`, `integrate`. Defaults to `decide` ("to be decided") when omitted.
@@ -84,6 +99,20 @@ root.
 }
 ```
 
+**comment** (a threaded task comment)
+```json
+{
+  "id": 7,
+  "task_id": 12,
+  "author_id": 3,
+  "parent_comment_id": null,
+  "body": "Looks good, shipping it",
+  "created_at": "2026-11-18T10:52:37.447Z",
+  "updated_at": "2026-11-18T10:52:37.447Z"
+}
+```
+`parent_comment_id` is `null` for a top-level comment, or the id of the comment being replied to. Replies form a tree; the frontend renders nesting (indentation) by following `parent_comment_id`.
+
 **notification**
 ```json
 {
@@ -97,6 +126,7 @@ root.
   "read_at": null
 }
 ```
+`notification_type` values include `assigned` and `comment` (a new comment on a task the recipient is assigned to, or — for a reply — a comment the recipient wrote that was replied to).
 
 **tokens** (returned by login and refresh)
 ```json
@@ -203,8 +233,9 @@ Create a new task. Auth: **Bearer**. `created_by_id` is taken from the token (no
 | `discipline` | string | no | One of the `discipline` enum values (see §3). Defaults to `decide`. |
 | `due_at` | string | no | Timestamp string (ISO-8601 recommended, e.g. `2026-12-01T09:00:00Z`). |
 | `start_at` | string | no | Start-date timestamp (ISO-8601 recommended). |
-| `assignee_id` | integer | no | Must be an existing active user id, else `400`. |
+| `assignee_ids` | integer[] | no | Array of existing active user ids (a task may have several assignees). Duplicates are de-duplicated; each must exist or `400`. A single integer is also accepted. Omitted/empty → unassigned. |
 | `parent_task_id` | integer | no | Must be an existing task id (for subtasks), else `400`. |
+| `project_id` | integer | no | Must be an existing project id, else `400`. Omitted → the default "Unidentified" project (`1`). |
 
 Minimal request:
 ```json
@@ -220,8 +251,9 @@ Full request:
   "discipline": "mechanical",
   "due_at": "2026-12-01T09:00:00Z",
   "start_at": "2026-11-20T09:00:00Z",
-  "assignee_id": 1,
-  "parent_task_id": null
+  "assignee_ids": [1, 3],
+  "parent_task_id": null,
+  "project_id": 2
 }
 ```
 Success `201 Created`:
@@ -245,11 +277,12 @@ Create a subtask under an existing parent task. Auth: **Bearer**. `created_by_id
 | `discipline` | string | no | One of the `discipline` enum values (see §3). Defaults to `decide`. |
 | `due_at` | string | no | Timestamp string (ISO-8601 recommended). |
 | `start_at` | string | no | Start-date timestamp (ISO-8601 recommended). |
-| `assignee_id` | integer | no | Must be an existing active user id, else `400`. |
+| `assignee_ids` | integer[] | no | Array of existing active user ids. A single integer is also accepted. Omitted/empty → unassigned. |
+| `project_id` | integer | no | Must be an existing project id, else `400`. Omitted → the default "Unidentified" project (`1`). |
 
 Request:
 ```json
-{ "parent_task_id": 12, "title": "Draft section 1", "status": "in_progress", "type": "design", "discipline": "mechanical" }
+{ "parent_task_id": 12, "title": "Draft section 1", "status": "in_progress", "type": "design", "discipline": "mechanical", "assignee_ids": [1, 3] }
 ```
 Success `201 Created`:
 ```json
@@ -279,6 +312,65 @@ Success `201 Created`:
 }
 ```
 Errors: `400` (missing/invalid field, non-existent task), `401`.
+
+---
+
+#### `POST /api/task/comment`
+Add a comment, or a threaded reply, to an existing task. Auth: **Bearer**. `author_id` is taken from the token. **Every assignee of the task receives a `comment` notification; on a reply, the author of the parent comment is also notified even if they are not assigned.** The comment's own author is never notified, and each recipient is notified at most once.
+
+| Field | Type | Required | Rules |
+| --- | --- | --- | --- |
+| `task_id` | integer | **yes** | Must be an existing task id, else `400`. |
+| `body` | string | **yes** | 1–4000 characters (trimmed); blank → `400`. |
+| `parent_comment_id` | integer | no | Id of the comment being replied to (for nesting). Must exist **and belong to the same task**, else `400`. Omitted → a top-level comment. |
+
+Request (top-level):
+```json
+{ "task_id": 12, "body": "Looks good, shipping it" }
+```
+Request (reply):
+```json
+{ "task_id": 12, "parent_comment_id": 7, "body": "Agreed — merging now" }
+```
+Success `201 Created`:
+```json
+{
+  "message": "Comment created",
+  "comment": { "...": "comment object (see §3)" }
+}
+```
+Errors: `400` (missing/invalid field, non-existent task or parent comment), `401`.
+
+---
+
+#### `POST /api/project/add`
+Create a project. Auth: **Bearer**. `created_by_id` is taken from the token.
+
+| Field | Type | Required | Rules |
+| --- | --- | --- | --- |
+| `name` | string | **yes** | 1–120 characters (trimmed). Unique (case-insensitive) → duplicate yields `400`. |
+| `description` | string | no | Up to 4000 chars; blank/omitted → `null`. |
+
+Request:
+```json
+{ "name": "Apollo", "description": "Rocket programme" }
+```
+Success `201 Created`:
+```json
+{ "project": { "...": "project object (see §3)" } }
+```
+Errors: `400` (missing/invalid field, duplicate name), `401`.
+
+---
+
+#### `GET /api/project/all`
+List all projects (for project pickers), alphabetical by name. Auth: **Bearer**. Always includes the built-in "Unidentified" project.
+
+Success `200 OK`:
+```json
+{ "projects": [ { "...": "project object" } ] }
+```
+Errors: `401`.
 
 ---
 
@@ -360,10 +452,11 @@ Success `200 OK`:
 {
   "task": { "...": "task object" },
   "subtasks": [ { "...": "task object (direct children, parent_task_id = task.id)" } ],
-  "notes": [ { "...": "note object (see §3)" } ]
+  "notes": [ { "...": "note object (see §3)" } ],
+  "comments": [ { "...": "comment object (see §3)" } ]
 }
 ```
-`subtasks` are **direct children only** (one level, not recursive), oldest first; `notes` are oldest first. Both are `[]` when there are none.
+`subtasks` are **direct children only** (one level, not recursive), oldest first; `notes` and `comments` are oldest first. All are `[]` when there are none. `comments` is a flat list ordered oldest-first; nesting is reconstructed client-side from each comment's `parent_comment_id`.
 Errors: `400` (missing/invalid `task_id`, or task not found), `401`.
 
 ---
@@ -388,14 +481,17 @@ Errors: `401`.
 | POST | `/api/auth/refresh` | — | `refresh_token` |
 | POST | `/api/auth/logout` | Bearer | _(none)_ |
 | GET | `/api/auth/me` | Bearer | — |
-| POST | `/api/task/add` | Bearer | `title`(+ optional `description`, `status`, `due_at`, `assignee_id`, `parent_task_id`) |
-| POST | `/api/task/subtask` | Bearer | `parent_task_id`, `title`(+ optional `description`, `status`, `due_at`, `assignee_id`) |
+| POST | `/api/task/add` | Bearer | `title`(+ optional `description`, `status`, `due_at`, `assignee_ids`, `parent_task_id`, `project_id`) |
+| POST | `/api/task/subtask` | Bearer | `parent_task_id`, `title`(+ optional `description`, `status`, `due_at`, `assignee_ids`, `project_id`) |
 | POST | `/api/task/note` | Bearer | `task_id`, `body` |
+| POST | `/api/task/comment` | Bearer | `task_id`, `body`(+ optional `parent_comment_id`) → notifies assignees + parent-comment author |
 | POST | `/api/task/status` | Bearer | `task_id`, `status` |
 | GET | `/api/task/all` | Bearer | — |
 | GET | `/api/task/mine` | Bearer | — |
 | GET | `/api/task/completed` | Bearer | — |
-| GET | `/api/task/detail` | Bearer | query `task_id` → `{ task, subtasks, notes }` |
+| GET | `/api/task/detail` | Bearer | query `task_id` → `{ task, subtasks, notes, comments }` |
+| POST | `/api/project/add` | Bearer | `name`(+ optional `description`) |
+| GET | `/api/project/all` | Bearer | — |
 | GET | `/api/user/all` | Bearer | — |
 | GET | `/api/notification/all` | Bearer | — |
 
@@ -407,4 +503,5 @@ Errors: `401`.
   to read it. (A task's notes and direct subtasks are now readable via
   `GET /api/task/detail`.)
 - Optimistic concurrency on status change (no client-supplied expected `version`).
-- Writing notifications (they are currently only read) and marking them read.
+- Marking notifications read (they are now **written** on `POST /api/task/comment` — to each assignee and, on a reply, the parent comment's author, excluding the comment's own author — and on no other action yet, but there is still no mark-as-read endpoint).
+- Reassigning a task's assignees or moving it between projects after creation (assignees and `project_id` are set at creation only).

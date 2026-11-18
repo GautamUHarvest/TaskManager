@@ -105,6 +105,29 @@ std::string resolveEnum(const std::optional<std::string> &value,
     return trimmed;
 }
 
+// Default project when the client does not specify one. Matches the
+// "Unidentified" project seeded in migration 004.
+constexpr std::int64_t kDefaultProjectId = 1;
+
+std::vector<std::int64_t> normalizeAssigneeIds(
+    const std::vector<std::int64_t> &assigneeIds)
+{
+    std::vector<std::int64_t> unique;
+    for (const auto id : assigneeIds)
+    {
+        if (id <= 0)
+        {
+            throw std::invalid_argument(
+                "Field 'assignee_ids' must contain positive ids");
+        }
+        if (std::find(unique.begin(), unique.end(), id) == unique.end())
+        {
+            unique.push_back(id);
+        }
+    }
+    return unique;
+}
+
 NewTask buildNewTask(std::int64_t createdById,
                      const std::string &title,
                      const std::optional<std::string> &description,
@@ -113,8 +136,9 @@ NewTask buildNewTask(std::int64_t createdById,
                      const std::optional<std::string> &discipline,
                      const std::optional<std::string> &dueAt,
                      const std::optional<std::string> &startAt,
-                     const std::optional<std::int64_t> &assigneeId,
-                     const std::optional<std::int64_t> &parentTaskId)
+                     const std::vector<std::int64_t> &assigneeIds,
+                     const std::optional<std::int64_t> &parentTaskId,
+                     const std::optional<std::int64_t> &projectId)
 {
     const std::string normalizedTitle = trim(title);
     if (normalizedTitle.empty())
@@ -125,18 +149,19 @@ NewTask buildNewTask(std::int64_t createdById,
     {
         throw std::invalid_argument("Field 'title' must be 1 to 200 characters");
     }
-    if (assigneeId && *assigneeId <= 0)
-    {
-        throw std::invalid_argument("Field 'assignee_id' must be a positive id");
-    }
     if (parentTaskId && *parentTaskId <= 0)
     {
         throw std::invalid_argument(
             "Field 'parent_task_id' must be a positive id");
     }
+    if (projectId && *projectId <= 0)
+    {
+        throw std::invalid_argument("Field 'project_id' must be a positive id");
+    }
 
     NewTask newTask;
     newTask.createdById = createdById;
+    newTask.projectId = projectId.value_or(kDefaultProjectId);
     newTask.title = normalizedTitle;
     newTask.description = normalizeOptionalText(description, 4000, "description");
     newTask.status = resolveStatus(status);
@@ -145,7 +170,7 @@ NewTask buildNewTask(std::int64_t createdById,
         resolveEnum(discipline, kTaskDisciplines, "discipline", "decide");
     newTask.dueAt = normalizeOptionalText(dueAt, 64, "due_at");
     newTask.startAt = normalizeOptionalText(startAt, 64, "start_at");
-    newTask.assigneeId = assigneeId;
+    newTask.assigneeIds = normalizeAssigneeIds(assigneeIds);
     newTask.parentTaskId = parentTaskId;
     return newTask;
 }
@@ -154,6 +179,37 @@ NewTask buildNewTask(std::int64_t createdById,
 TaskService::TaskService(AuthService &auth, TaskRepository &repository)
     : auth_(auth), repository_(repository)
 {
+}
+
+ProjectRecord TaskService::addProject(
+    const std::string &accessToken,
+    const std::string &name,
+    const std::optional<std::string> &description)
+{
+    const auto user = auth_.profile(accessToken);
+    const std::string trimmedName = trim(name);
+    if (trimmedName.empty())
+    {
+        throw std::invalid_argument("Field 'name' is required");
+    }
+    if (trimmedName.size() > 120)
+    {
+        throw std::invalid_argument("Field 'name' must be 1 to 120 characters");
+    }
+
+    NewProject project;
+    project.createdById = user.id;
+    project.name = trimmedName;
+    project.description =
+        normalizeOptionalText(description, 4000, "description");
+    return repository_.createProject(project);
+}
+
+std::vector<ProjectRecord> TaskService::allProjects(
+    const std::string &accessToken)
+{
+    auth_.profile(accessToken);  // authenticate; throws if invalid
+    return repository_.listProjects();
 }
 
 TaskRecord TaskService::addTask(
@@ -165,13 +221,23 @@ TaskRecord TaskService::addTask(
     const std::optional<std::string> &discipline,
     const std::optional<std::string> &dueAt,
     const std::optional<std::string> &startAt,
-    const std::optional<std::int64_t> &assigneeId,
-    const std::optional<std::int64_t> &parentTaskId)
+    const std::vector<std::int64_t> &assigneeIds,
+    const std::optional<std::int64_t> &parentTaskId,
+    const std::optional<std::int64_t> &projectId)
 {
     const auto user = auth_.profile(accessToken);
-    return repository_.createTask(buildNewTask(
-        user.id, title, description, status, type, discipline, dueAt, startAt,
-        assigneeId, parentTaskId));
+    auto newTask = buildNewTask(user.id, title, description, status, type,
+                                discipline, dueAt, startAt, assigneeIds,
+                                parentTaskId, projectId);
+    // project_id has no DB-level foreign key (see migration 006), so verify the
+    // project exists here when the client supplied one. The default project
+    // (id 1) always exists, so an omitted project_id needs no lookup.
+    if (projectId && !repository_.findProject(newTask.projectId))
+    {
+        throw std::invalid_argument(
+            "Field 'project_id' must reference an existing project");
+    }
+    return repository_.createTask(newTask);
 }
 
 TaskRecord TaskService::addSubtask(
@@ -184,7 +250,8 @@ TaskRecord TaskService::addSubtask(
     const std::optional<std::string> &discipline,
     const std::optional<std::string> &dueAt,
     const std::optional<std::string> &startAt,
-    const std::optional<std::int64_t> &assigneeId)
+    const std::vector<std::int64_t> &assigneeIds,
+    const std::optional<std::int64_t> &projectId)
 {
     const auto user = auth_.profile(accessToken);
     if (parentTaskId <= 0)
@@ -192,9 +259,16 @@ TaskRecord TaskService::addSubtask(
         throw std::invalid_argument(
             "Field 'parent_task_id' must be a positive id");
     }
-    return repository_.createSubtask(buildNewTask(
-        user.id, title, description, status, type, discipline, dueAt, startAt,
-        assigneeId, parentTaskId));
+    auto newTask = buildNewTask(user.id, title, description, status, type,
+                                discipline, dueAt, startAt, assigneeIds,
+                                parentTaskId, projectId);
+    // See addTask: project_id existence is enforced in the service layer.
+    if (projectId && !repository_.findProject(newTask.projectId))
+    {
+        throw std::invalid_argument(
+            "Field 'project_id' must reference an existing project");
+    }
+    return repository_.createSubtask(newTask);
 }
 
 TaskNoteRecord TaskService::addNote(const std::string &accessToken,
@@ -221,6 +295,92 @@ TaskNoteRecord TaskService::addNote(const std::string &accessToken,
     note.authorId = user.id;
     note.body = trimmedBody;
     return repository_.addNote(note);
+}
+
+CommentRecord TaskService::addComment(
+    const std::string &accessToken,
+    std::int64_t taskId,
+    const std::string &body,
+    const std::optional<std::int64_t> &parentCommentId)
+{
+    const auto user = auth_.profile(accessToken);
+    if (taskId <= 0)
+    {
+        throw std::invalid_argument("Field 'task_id' must be a positive id");
+    }
+    if (parentCommentId && *parentCommentId <= 0)
+    {
+        throw std::invalid_argument(
+            "Field 'parent_comment_id' must be a positive id");
+    }
+    const std::string trimmedBody = trim(body);
+    if (trimmedBody.empty())
+    {
+        throw std::invalid_argument("Field 'body' is required");
+    }
+    if (trimmedBody.size() > 4000)
+    {
+        throw std::invalid_argument("Field 'body' is too long");
+    }
+
+    const auto task = repository_.findTask(taskId);
+    if (!task)
+    {
+        throw std::invalid_argument("Task not found");
+    }
+
+    // For a reply, the parent comment must exist and belong to the same task.
+    // Capture its author so they can be notified alongside the assignees.
+    std::optional<std::int64_t> parentAuthorId;
+    if (parentCommentId)
+    {
+        const auto parent = repository_.findComment(*parentCommentId);
+        if (!parent || parent->taskId != taskId)
+        {
+            throw std::invalid_argument(
+                "Field 'parent_comment_id' must reference a comment on this "
+                "task");
+        }
+        parentAuthorId = parent->authorId;
+    }
+
+    NewComment comment;
+    comment.taskId = taskId;
+    comment.authorId = user.id;
+    comment.parentCommentId = parentCommentId;
+    comment.body = trimmedBody;
+    const auto created = repository_.addComment(comment);
+
+    // Notify every assignee of the task, plus (on a reply) the author of the
+    // parent comment even if they are not assigned. The comment's own author is
+    // never notified, and each recipient is notified at most once.
+    const std::string message =
+        user.displayName + " commented on \"" + task->title + "\"";
+    std::vector<std::int64_t> notified;
+    const auto notify = [&](std::int64_t recipientId) {
+        if (recipientId == user.id)
+        {
+            return;
+        }
+        if (std::find(notified.begin(), notified.end(), recipientId) !=
+            notified.end())
+        {
+            return;
+        }
+        notified.push_back(recipientId);
+        repository_.createNotification(
+            recipientId, user.id, taskId, "comment", message);
+    };
+    for (const auto assigneeId : task->assigneeIds)
+    {
+        notify(assigneeId);
+    }
+    if (parentAuthorId)
+    {
+        notify(*parentAuthorId);
+    }
+
+    return created;
 }
 
 TaskRecord TaskService::changeStatus(const std::string &accessToken,
@@ -257,6 +417,7 @@ TaskDetail TaskService::taskDetail(const std::string &accessToken,
     detail.task = *task;
     detail.subtasks = repository_.listSubtasks(taskId);
     detail.notes = repository_.listNotes(taskId);
+    detail.comments = repository_.listComments(taskId);
     return detail;
 }
 

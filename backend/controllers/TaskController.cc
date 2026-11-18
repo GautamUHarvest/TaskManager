@@ -131,6 +131,40 @@ std::optional<std::int64_t> optionalInt64(const Json::Value &body,
     return body[field].asInt64();
 }
 
+// Parses an optional array of integers (e.g. "assignee_ids": [1, 2]). A missing
+// or null field yields an empty list. Also accepts a single integer for
+// convenience.
+std::vector<std::int64_t> optionalInt64Array(const Json::Value &body,
+                                             const char *field)
+{
+    std::vector<std::int64_t> result;
+    if (!body.isMember(field) || body[field].isNull())
+    {
+        return result;
+    }
+    const auto &value = body[field];
+    if (value.isIntegral())
+    {
+        result.push_back(value.asInt64());
+        return result;
+    }
+    if (!value.isArray())
+    {
+        throw std::invalid_argument(std::string("Field '") + field +
+                                    "' must be an array of integers");
+    }
+    for (const auto &element : value)
+    {
+        if (!element.isIntegral())
+        {
+            throw std::invalid_argument(std::string("Field '") + field +
+                                        "' must contain only integers");
+        }
+        result.push_back(element.asInt64());
+    }
+    return result;
+}
+
 drogon::HttpResponsePtr jsonResponse(drogon::HttpStatusCode status,
                                      const Json::Value &body)
 {
@@ -151,6 +185,22 @@ Json::Value userJson(const UserRecord &user)
     return body;
 }
 
+Json::Value projectJson(const ProjectRecord &project)
+{
+    Json::Value body;
+    body["id"] = Json::Int64(project.id);
+    body["name"] = project.name;
+    body["description"] = project.description
+                              ? Json::Value(*project.description)
+                              : Json::Value(Json::nullValue);
+    body["created_by_id"] =
+        project.createdById ? Json::Value(Json::Int64(*project.createdById))
+                            : Json::Value(Json::nullValue);
+    body["created_at"] = project.createdAt;
+    body["updated_at"] = project.updatedAt;
+    return body;
+}
+
 Json::Value taskJson(const TaskRecord &task)
 {
     Json::Value body;
@@ -158,6 +208,7 @@ Json::Value taskJson(const TaskRecord &task)
     body["parent_task_id"] = task.parentTaskId
                                  ? Json::Value(Json::Int64(*task.parentTaskId))
                                  : Json::Value(Json::nullValue);
+    body["project_id"] = Json::Int64(task.projectId);
     body["title"] = task.title;
     body["description"] = task.description ? Json::Value(*task.description)
                                            : Json::Value(Json::nullValue);
@@ -168,13 +219,32 @@ Json::Value taskJson(const TaskRecord &task)
         task.dueAt ? Json::Value(*task.dueAt) : Json::Value(Json::nullValue);
     body["start_at"] = task.startAt ? Json::Value(*task.startAt)
                                      : Json::Value(Json::nullValue);
-    body["assignee_id"] = task.assigneeId
-                              ? Json::Value(Json::Int64(*task.assigneeId))
-                              : Json::Value(Json::nullValue);
+    Json::Value assigneeIds(Json::arrayValue);
+    for (const auto id : task.assigneeIds)
+    {
+        assigneeIds.append(Json::Int64(id));
+    }
+    body["assignee_ids"] = assigneeIds;
     body["created_by_id"] = Json::Int64(task.createdById);
     body["version"] = Json::Int64(task.version);
     body["created_at"] = task.createdAt;
     body["updated_at"] = task.updatedAt;
+    return body;
+}
+
+Json::Value commentJson(const CommentRecord &comment)
+{
+    Json::Value body;
+    body["id"] = Json::Int64(comment.id);
+    body["task_id"] = Json::Int64(comment.taskId);
+    body["author_id"] = Json::Int64(comment.authorId);
+    body["parent_comment_id"] =
+        comment.parentCommentId
+            ? Json::Value(Json::Int64(*comment.parentCommentId))
+            : Json::Value(Json::nullValue);
+    body["body"] = comment.body;
+    body["created_at"] = comment.createdAt;
+    body["updated_at"] = comment.updatedAt;
     return body;
 }
 
@@ -249,17 +319,18 @@ void TaskController::addTask(const drogon::HttpRequestPtr &request,
     const auto token = bearerToken(request);
     const auto body = requiredBody(request);
     run(request, std::move(callback), [this, token, body]() {
-        const auto created = service_.addTask(token,
-                                              requiredString(body, "title"),
-                                              optionalString(body, "description"),
-                                              optionalString(body, "status"),
-                                              optionalString(body, "type"),
-                                              optionalString(body, "discipline"),
-                                              optionalString(body, "due_at"),
-                                              optionalString(body, "start_at"),
-                                              optionalInt64(body, "assignee_id"),
-                                              optionalInt64(body,
-                                                            "parent_task_id"));
+        const auto created =
+            service_.addTask(token,
+                             requiredString(body, "title"),
+                             optionalString(body, "description"),
+                             optionalString(body, "status"),
+                             optionalString(body, "type"),
+                             optionalString(body, "discipline"),
+                             optionalString(body, "due_at"),
+                             optionalString(body, "start_at"),
+                             optionalInt64Array(body, "assignee_ids"),
+                             optionalInt64(body, "parent_task_id"),
+                             optionalInt64(body, "project_id"));
         Json::Value response;
         response["task"] = taskJson(created);
         return jsonResponse(drogon::k201Created, response);
@@ -282,7 +353,8 @@ void TaskController::addSubtask(const drogon::HttpRequestPtr &request,
                                 optionalString(body, "discipline"),
                                 optionalString(body, "due_at"),
                                 optionalString(body, "start_at"),
-                                optionalInt64(body, "assignee_id"));
+                                optionalInt64Array(body, "assignee_ids"),
+                                optionalInt64(body, "project_id"));
         Json::Value response;
         response["task"] = taskJson(created);
         return jsonResponse(drogon::k201Created, response);
@@ -302,6 +374,51 @@ void TaskController::addNote(const drogon::HttpRequestPtr &request,
         response["message"] = "Note created";
         response["note"] = noteJson(created);
         return jsonResponse(drogon::k201Created, response);
+    });
+}
+
+void TaskController::addComment(const drogon::HttpRequestPtr &request,
+                                drogon::AdviceCallback &&callback)
+{
+    const auto token = bearerToken(request);
+    const auto body = requiredBody(request);
+    run(request, std::move(callback), [this, token, body]() {
+        const auto created =
+            service_.addComment(token,
+                                requiredInt64(body, "task_id"),
+                                requiredString(body, "body"),
+                                optionalInt64(body, "parent_comment_id"));
+        Json::Value response;
+        response["message"] = "Comment created";
+        response["comment"] = commentJson(created);
+        return jsonResponse(drogon::k201Created, response);
+    });
+}
+
+void TaskController::addProject(const drogon::HttpRequestPtr &request,
+                                drogon::AdviceCallback &&callback)
+{
+    const auto token = bearerToken(request);
+    const auto body = requiredBody(request);
+    run(request, std::move(callback), [this, token, body]() {
+        const auto created = service_.addProject(
+            token, requiredString(body, "name"),
+            optionalString(body, "description"));
+        Json::Value response;
+        response["project"] = projectJson(created);
+        return jsonResponse(drogon::k201Created, response);
+    });
+}
+
+void TaskController::allProjects(const drogon::HttpRequestPtr &request,
+                                 drogon::AdviceCallback &&callback)
+{
+    const auto token = bearerToken(request);
+    run(request, std::move(callback), [this, token]() {
+        Json::Value response;
+        response["projects"] = jsonArray(service_.allProjects(token),
+                                         projectJson);
+        return jsonResponse(drogon::k200OK, response);
     });
 }
 
@@ -331,6 +448,7 @@ void TaskController::taskDetail(const drogon::HttpRequestPtr &request,
         response["task"] = taskJson(detail.task);
         response["subtasks"] = jsonArray(detail.subtasks, taskJson);
         response["notes"] = jsonArray(detail.notes, noteJson);
+        response["comments"] = jsonArray(detail.comments, commentJson);
         return jsonResponse(drogon::k200OK, response);
     });
 }
