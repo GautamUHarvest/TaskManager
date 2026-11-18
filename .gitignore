@@ -1,5 +1,12 @@
 # Build artifacts
 backend/build/
+frontend/build/
+
+# Flutter
+frontend/.dart_tool/
+frontend/.packages
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies
 
 # Vendored dependency (use system-installed Drogon)
 libraries/
@@ -17,15 +24,7 @@ uploads/
 # Secrets
 .env
 
-# Frontend (not ready yet)
-frontend/
 
-# Flutter
-frontend/.dart_tool/
-frontend/build/
-frontend/.packages
-frontend/.flutter-plugins
-frontend/.flutter-plugins-dependencies
 
 # IDE
 .vscode/
