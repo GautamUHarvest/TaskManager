@@ -17,6 +17,9 @@ uploads/
 # Secrets
 .env
 
+# Frontend (not ready yet)
+frontend/
+
 # Flutter
 frontend/.dart_tool/
 frontend/build/
