@@ -19,8 +19,9 @@ class DataApi {
     TaskDiscipline discipline = TaskDiscipline.decide,
     DateTime? startAt,
     DateTime? dueAt,
-    int? assigneeId,
+    List<int> assigneeIds = const [],
     int? parentTaskId,
+    int? projectId,
   }) async {
     final body = <String, dynamic>{
       'title': title,
@@ -31,8 +32,13 @@ class DataApi {
       'discipline': discipline.wire,
       if (startAt != null) 'start_at': startAt.toUtc().toIso8601String(),
       if (dueAt != null) 'due_at': dueAt.toUtc().toIso8601String(),
-      if (assigneeId != null) 'assignee_id': assigneeId,
+      // Send both `assignee_ids` (new shape) and `assignee_id` as the first
+      // entry so a backend that has not been updated yet still records a
+      // primary assignee.
+      if (assigneeIds.isNotEmpty) 'assignee_ids': assigneeIds,
+      if (assigneeIds.isNotEmpty) 'assignee_id': assigneeIds.first,
       if (parentTaskId != null) 'parent_task_id': parentTaskId,
+      if (projectId != null) 'project_id': projectId,
     };
     final json = await _client.post('/task/add', body, token: token);
     return Task.fromJson(json['task'] as Map<String, dynamic>);
@@ -51,7 +57,8 @@ class DataApi {
     TaskDiscipline discipline = TaskDiscipline.decide,
     DateTime? startAt,
     DateTime? dueAt,
-    int? assigneeId,
+    List<int> assigneeIds = const [],
+    int? projectId,
   }) async {
     final body = <String, dynamic>{
       'parent_task_id': parentTaskId,
@@ -63,7 +70,9 @@ class DataApi {
       'discipline': discipline.wire,
       if (startAt != null) 'start_at': startAt.toUtc().toIso8601String(),
       if (dueAt != null) 'due_at': dueAt.toUtc().toIso8601String(),
-      if (assigneeId != null) 'assignee_id': assigneeId,
+      if (assigneeIds.isNotEmpty) 'assignee_ids': assigneeIds,
+      if (assigneeIds.isNotEmpty) 'assignee_id': assigneeIds.first,
+      if (projectId != null) 'project_id': projectId,
     };
     final json = await _client.post('/task/subtask', body, token: token);
     return Task.fromJson(json['task'] as Map<String, dynamic>);
@@ -141,5 +150,49 @@ class DataApi {
     return items
         .map((item) => AppNotification.fromJson(item as Map<String, dynamic>))
         .toList(growable: false);
+  }
+
+  /// Post a threaded comment via `POST /task/comment`. [parentCommentId] is
+  /// null for a top-level comment; present for a reply. The server fans out
+  /// notifications to every assignee of the task (except the author) and to
+  /// the parent comment's author.
+  Future<TaskComment> addComment({
+    required String token,
+    required int taskId,
+    required String body,
+    int? parentCommentId,
+  }) async {
+    final payload = <String, dynamic>{
+      'task_id': taskId,
+      'body': body,
+      if (parentCommentId != null) 'parent_comment_id': parentCommentId,
+    };
+    final json = await _client.post('/task/comment', payload, token: token);
+    return TaskComment.fromJson(json['comment'] as Map<String, dynamic>);
+  }
+
+  /// List projects (for the task-create project picker). The built-in
+  /// "Unidentified" project is always included.
+  Future<List<Project>> allProjects(String token) async {
+    final json = await _client.get('/project/all', token: token, noCache: true);
+    final items = json['projects'] as List<dynamic>? ?? const [];
+    return items
+        .map((item) => Project.fromJson(item as Map<String, dynamic>))
+        .toList(growable: false);
+  }
+
+  /// Create a project via `POST /project/add`.
+  Future<Project> createProject({
+    required String token,
+    required String name,
+    String? description,
+  }) async {
+    final body = <String, dynamic>{
+      'name': name,
+      if (description != null && description.isNotEmpty)
+        'description': description,
+    };
+    final json = await _client.post('/project/add', body, token: token);
+    return Project.fromJson(json['project'] as Map<String, dynamic>);
   }
 }

@@ -18,11 +18,13 @@ class TaskDetailScreen extends StatefulWidget {
     required this.controller,
     required this.taskId,
     required this.usersById,
+    this.projectsById = const {},
   });
 
   final AuthController controller;
   final int taskId;
   final Map<int, AuthUser> usersById;
+  final Map<int, Project> projectsById;
 
   @override
   State<TaskDetailScreen> createState() => _TaskDetailScreenState();
@@ -135,6 +137,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
               controller: widget.controller,
               taskId: subtask.id,
               usersById: widget.usersById,
+              projectsById: widget.projectsById,
             ),
           ),
         )
@@ -180,9 +183,19 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
           }
 
           final task = detail.task;
-          final canEdit = _myId != null && task.assigneeId == _myId;
+          // A task may have multiple assignees; any one of them can edit.
+          final assignees = task.assigneeIds.isNotEmpty
+              ? task.assigneeIds
+              : (task.assigneeId == null ? const <int>[] : [task.assigneeId!]);
+          final canEdit = _myId != null && assignees.contains(_myId);
           final canChangeStatus = _myId != null &&
-              (task.assigneeId == _myId || task.createdById == _myId);
+              (assignees.contains(_myId) || task.createdById == _myId);
+          final projectName = task.projectId == null
+              ? null
+              : widget.projectsById[task.projectId!]?.name;
+          final assigneesLabel = assignees.isEmpty
+              ? 'Unassigned'
+              : assignees.map(_userLabel).join(' · ');
 
           return Column(
             children: [
@@ -201,8 +214,9 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                       children: [
                         _HeaderCard(
                           task: task,
-                          assigneeLabel: _userLabel(task.assigneeId),
+                          assigneeLabel: assigneesLabel,
                           createdByLabel: _userLabel(task.createdById),
+                          projectName: projectName,
                           canChangeStatus: canChangeStatus,
                           onChangeStatus: () => _changeStatus(task),
                         ),
@@ -235,7 +249,14 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                           },
                         ),
                         const SizedBox(height: 20),
-                        const _CommentsPlaceholder(),
+                        _CommentsSection(
+                          comments: detail.comments,
+                          taskId: task.id,
+                          controller: widget.controller,
+                          currentUserId: _myId,
+                          authorLabel: _userLabel,
+                          onCommentPosted: _reload,
+                        ),
                       ],
                     ),
                   ),
@@ -254,6 +275,7 @@ class _HeaderCard extends StatelessWidget {
     required this.task,
     required this.assigneeLabel,
     required this.createdByLabel,
+    required this.projectName,
     required this.canChangeStatus,
     required this.onChangeStatus,
   });
@@ -261,6 +283,7 @@ class _HeaderCard extends StatelessWidget {
   final Task task;
   final String assigneeLabel;
   final String createdByLabel;
+  final String? projectName;
   final bool canChangeStatus;
   final VoidCallback onChangeStatus;
 
@@ -285,6 +308,8 @@ class _HeaderCard extends StatelessWidget {
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 TaskStatusChip(status: task.status),
+                if (projectName != null)
+                  TagChip(label: 'Project: $projectName'),
                 TagChip(label: 'Type: ${task.type.label}'),
                 TagChip(label: 'Discipline: ${task.discipline.label}'),
                 if (canChangeStatus)
@@ -658,43 +683,360 @@ class _NoteTile extends StatelessWidget {
   }
 }
 
-class _CommentsPlaceholder extends StatelessWidget {
-  const _CommentsPlaceholder();
+/// Threaded discussion. The server returns a flat list with
+/// [TaskComment.parentCommentId]; this widget builds the tree and renders
+/// each level with a leading indent plus a left guide line so nested replies
+/// stay visibly nested (a reply to a reply sits one level deeper, not
+/// alongside its parent). Anyone can comment; the task's assignees and the
+/// parent-comment author get notified server-side.
+class _CommentsSection extends StatefulWidget {
+  const _CommentsSection({
+    required this.comments,
+    required this.taskId,
+    required this.controller,
+    required this.currentUserId,
+    required this.authorLabel,
+    required this.onCommentPosted,
+  });
+
+  final List<TaskComment> comments;
+  final int taskId;
+  final AuthController controller;
+  final int? currentUserId;
+  final String Function(int?) authorLabel;
+  final VoidCallback onCommentPosted;
+
+  @override
+  State<_CommentsSection> createState() => _CommentsSectionState();
+}
+
+class _CommentsSectionState extends State<_CommentsSection> {
+  final _topLevelController = TextEditingController();
+  bool _sendingTopLevel = false;
+
+  /// The comment we are currently replying to, if any. Clicking Reply on a
+  /// nested comment arms this; the composer below the thread then targets it.
+  int? _replyingTo;
+  final _replyController = TextEditingController();
+  bool _sendingReply = false;
+
+  @override
+  void dispose() {
+    _topLevelController.dispose();
+    _replyController.dispose();
+    super.dispose();
+  }
+
+  /// Posts [body] with [parentCommentId] and clears the matching text field
+  /// on success. Any failure is surfaced via the snackbar so the composer
+  /// keeps the typed text for a retry.
+  Future<bool> _post({required String body, int? parentCommentId}) async {
+    try {
+      await widget.controller.addComment(
+        taskId: widget.taskId,
+        body: body,
+        parentCommentId: parentCommentId,
+      );
+      widget.onCommentPosted();
+      return true;
+    } catch (error) {
+      if (!mounted) return false;
+      final message =
+          error is AuthApiException ? error.message : 'Could not post.';
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
+      return false;
+    }
+  }
+
+  Future<void> _sendTopLevel() async {
+    final body = _topLevelController.text.trim();
+    if (body.isEmpty) return;
+    setState(() => _sendingTopLevel = true);
+    final ok = await _post(body: body);
+    if (!mounted) return;
+    setState(() => _sendingTopLevel = false);
+    if (ok) _topLevelController.clear();
+  }
+
+  Future<void> _sendReply() async {
+    final target = _replyingTo;
+    final body = _replyController.text.trim();
+    if (target == null || body.isEmpty) return;
+    setState(() => _sendingReply = true);
+    final ok = await _post(body: body, parentCommentId: target);
+    if (!mounted) return;
+    setState(() {
+      _sendingReply = false;
+      if (ok) {
+        _replyController.clear();
+        _replyingTo = null;
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // Group comments by parent id so the tree can be built in one pass.
+    final childrenByParent = <int?, List<TaskComment>>{};
+    for (final comment in widget.comments) {
+      childrenByParent
+          .putIfAbsent(comment.parentCommentId, () => [])
+          .add(comment);
+    }
+    final topLevel = childrenByParent[null] ?? const [];
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(20),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(
-              Icons.forum_outlined,
-              color: theme.colorScheme.onSurfaceVariant,
+            Row(
+              children: [
+                Icon(Icons.forum_outlined,
+                    color: theme.colorScheme.onSurfaceVariant),
+                const SizedBox(width: 10),
+                Text(
+                  'Comments (${widget.comments.length})',
+                  style: theme.textTheme.titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              ],
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Comments',
-                    style: theme.textTheme.titleMedium
-                        ?.copyWith(fontWeight: FontWeight.w700),
+            const SizedBox(height: 12),
+            if (topLevel.isEmpty)
+              Text(
+                'No comments yet. Start the discussion below.',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              )
+            else
+              for (final comment in topLevel)
+                _CommentNode(
+                  comment: comment,
+                  childrenByParent: childrenByParent,
+                  depth: 0,
+                  authorLabel: widget.authorLabel,
+                  replyingTo: _replyingTo,
+                  onReplyPressed: (id) => setState(() {
+                    _replyingTo = id;
+                    _replyController.clear();
+                  }),
+                  onCancelReply: () => setState(() {
+                    _replyingTo = null;
+                    _replyController.clear();
+                  }),
+                  replyController: _replyController,
+                  sendingReply: _sendingReply,
+                  onSendReply: _sendReply,
+                ),
+            const Divider(height: 28),
+            Text(
+              'Add a comment',
+              style: theme.textTheme.labelLarge
+                  ?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _topLevelController,
+              minLines: 2,
+              maxLines: 4,
+              maxLength: 4000,
+              decoration: const InputDecoration(
+                hintText: 'Write a comment… assignees will be notified.',
+              ),
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton.icon(
+                onPressed: _sendingTopLevel ? null : _sendTopLevel,
+                icon: _sendingTopLevel
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.send, size: 18),
+                label: const Text('Post comment'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Renders one comment plus its replies recursively. Each level adds a
+/// leading indent and a left guide line so a reply of a reply sits one step
+/// deeper than its parent, which is in turn one step deeper than the
+/// top-level comment it answers.
+class _CommentNode extends StatelessWidget {
+  const _CommentNode({
+    required this.comment,
+    required this.childrenByParent,
+    required this.depth,
+    required this.authorLabel,
+    required this.replyingTo,
+    required this.onReplyPressed,
+    required this.onCancelReply,
+    required this.replyController,
+    required this.sendingReply,
+    required this.onSendReply,
+  });
+
+  final TaskComment comment;
+  final Map<int?, List<TaskComment>> childrenByParent;
+  final int depth;
+  final String Function(int?) authorLabel;
+  final int? replyingTo;
+  final ValueChanged<int> onReplyPressed;
+  final VoidCallback onCancelReply;
+  final TextEditingController replyController;
+  final bool sendingReply;
+  final Future<void> Function() onSendReply;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final children = childrenByParent[comment.id] ?? const <TaskComment>[];
+    final isReplyTarget = replyingTo == comment.id;
+    // Cap the visual indent so deeply nested chains stay readable on narrow
+    // viewports; nesting still reads via the guide line and spacing even
+    // when the pixel offset stops growing.
+    final indentDepth = depth > 6 ? 6 : depth;
+    final leftPad = 16.0 * indentDepth;
+    return Padding(
+      padding: EdgeInsets.only(left: leftPad, bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (depth > 0)
+                  Container(
+                    width: 2,
+                    margin: const EdgeInsets.only(right: 10),
+                    color: theme.colorScheme.outlineVariant,
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Coming soon — a place to discuss this task with the team.',
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHighest
+                          .withValues(alpha: 0.35),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                authorLabel(comment.authorId),
+                                style: theme.textTheme.labelLarge?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                            if (comment.createdAt != null)
+                              Text(
+                                formatTaskDate(comment.createdAt!),
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Text(comment.body,
+                            style: theme.textTheme.bodyMedium),
+                        const SizedBox(height: 4),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton.icon(
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 2,
+                              ),
+                              minimumSize: const Size(0, 32),
+                            ),
+                            onPressed: isReplyTarget
+                                ? onCancelReply
+                                : () => onReplyPressed(comment.id),
+                            icon: Icon(
+                              isReplyTarget ? Icons.close : Icons.reply,
+                              size: 16,
+                            ),
+                            label: Text(isReplyTarget ? 'Cancel' : 'Reply'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (isReplyTarget)
+            Padding(
+              // One extra indent step so the composer sits where the new
+              // reply will land once posted.
+              padding: const EdgeInsets.only(left: 16, top: 6, bottom: 6),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: replyController,
+                    autofocus: true,
+                    minLines: 1,
+                    maxLines: 4,
+                    maxLength: 4000,
+                    decoration: InputDecoration(
+                      hintText:
+                          'Reply to ${authorLabel(comment.authorId)}…',
+                      isDense: true,
+                    ),
+                  ),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: FilledButton.tonalIcon(
+                      onPressed: sendingReply ? null : onSendReply,
+                      icon: sendingReply
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child:
+                                  CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.send, size: 16),
+                      label: const Text('Post reply'),
                     ),
                   ),
                 ],
               ),
             ),
-          ],
-        ),
+          // Recurse: each child renders one step deeper than this comment.
+          for (final child in children)
+            _CommentNode(
+              comment: child,
+              childrenByParent: childrenByParent,
+              depth: depth + 1,
+              authorLabel: authorLabel,
+              replyingTo: replyingTo,
+              onReplyPressed: onReplyPressed,
+              onCancelReply: onCancelReply,
+              replyController: replyController,
+              sendingReply: sendingReply,
+              onSendReply: onSendReply,
+            ),
+        ],
       ),
     );
   }
@@ -806,7 +1148,7 @@ class _AddSubtaskDialogState extends State<_AddSubtaskDialog> {
         discipline: _discipline,
         startAt: _startDate,
         dueAt: _dueDate,
-        assigneeId: _assigneeId,
+        assigneeIds: _assigneeId == null ? const [] : [_assigneeId!],
       );
       if (mounted) Navigator.pop(context, true);
     } on AuthApiException catch (error) {

@@ -65,8 +65,9 @@ class AuthController extends ChangeNotifier {
     TaskDiscipline discipline = TaskDiscipline.decide,
     DateTime? startAt,
     DateTime? dueAt,
-    int? assigneeId,
+    List<int> assigneeIds = const [],
     int? parentTaskId,
+    int? projectId,
   }) =>
       _authorized((token) => data.createTask(
             token: token,
@@ -77,8 +78,9 @@ class AuthController extends ChangeNotifier {
             discipline: discipline,
             startAt: startAt,
             dueAt: dueAt,
-            assigneeId: assigneeId,
+            assigneeIds: assigneeIds,
             parentTaskId: parentTaskId,
+            projectId: projectId,
           ));
 
   Future<TaskDetail> taskDetail(int taskId) =>
@@ -93,7 +95,8 @@ class AuthController extends ChangeNotifier {
     TaskDiscipline discipline = TaskDiscipline.decide,
     DateTime? startAt,
     DateTime? dueAt,
-    int? assigneeId,
+    List<int> assigneeIds = const [],
+    int? projectId,
   }) =>
       _authorized((token) => data.createSubtask(
             token: token,
@@ -105,8 +108,37 @@ class AuthController extends ChangeNotifier {
             discipline: discipline,
             startAt: startAt,
             dueAt: dueAt,
-            assigneeId: assigneeId,
+            assigneeIds: assigneeIds,
+            projectId: projectId,
           ));
+
+  Future<TaskComment> addComment({
+    required int taskId,
+    required String body,
+    int? parentCommentId,
+  }) =>
+      _authorized(
+        (token) => data.addComment(
+          token: token,
+          taskId: taskId,
+          body: body,
+          parentCommentId: parentCommentId,
+        ),
+      );
+
+  Future<List<Project>> allProjects() => _authorized(data.allProjects);
+
+  Future<Project> createProject({
+    required String name,
+    String? description,
+  }) =>
+      _authorized(
+        (token) => data.createProject(
+          token: token,
+          name: name,
+          description: description,
+        ),
+      );
 
   Future<TaskNote> addNote({required int taskId, required String body}) =>
       _authorized(

@@ -30,12 +30,14 @@ class _TaskWorkspaceScreenState extends State<TaskWorkspaceScreen> {
   _WorkspaceSection _section = _WorkspaceSection.home;
 
   Map<int, AuthUser> _usersById = const {};
+  List<Project> _projects = const [];
   int _unreadCount = 0;
 
   @override
   void initState() {
     super.initState();
     _loadUsers();
+    _loadProjects();
     _loadUnreadCount();
   }
 
@@ -48,6 +50,17 @@ class _TaskWorkspaceScreenState extends State<TaskWorkspaceScreen> {
       });
     } catch (_) {
       // The assignee labels simply fall back to "User #id" if this fails.
+    }
+  }
+
+  Future<void> _loadProjects() async {
+    try {
+      final projects = await widget.controller.allProjects();
+      if (!mounted) return;
+      setState(() => _projects = projects);
+    } catch (_) {
+      // If this fails the Create Task pane falls back to the local
+      // "Unidentified" stand-in below so task creation isn't blocked.
     }
   }
 
@@ -70,6 +83,29 @@ class _TaskWorkspaceScreenState extends State<TaskWorkspaceScreen> {
     return user?.displayName ?? 'User #$assigneeId';
   }
 
+  /// Human-readable label for all of a task's assignees. Falls back to the
+  /// single [Task.assigneeId] when the backend still returns only that.
+  String _assigneesLabelFor(Task task) {
+    final ids = task.assigneeIds.isNotEmpty
+        ? task.assigneeIds
+        : (task.assigneeId == null ? const <int>[] : [task.assigneeId!]);
+    if (ids.isEmpty) return 'Unassigned';
+    final names = ids.map(_assigneeLabel).toList();
+    if (names.length == 1) return names.first;
+    if (names.length == 2) return '${names[0]} & ${names[1]}';
+    return '${names[0]} +${names.length - 1} others';
+  }
+
+  /// Project name for display on a task card, or null if the task carries no
+  /// project or its project isn't loaded yet.
+  String? _projectNameFor(Task task) {
+    if (task.projectId == null) return null;
+    for (final project in _projects) {
+      if (project.id == task.projectId) return project.name;
+    }
+    return null;
+  }
+
   /// "Display Name · EMP123" for the task creator (shown as "Assigned by").
   String _createdByLabel(int? createdById) {
     if (createdById == null) return 'Unknown';
@@ -87,6 +123,7 @@ class _TaskWorkspaceScreenState extends State<TaskWorkspaceScreen> {
           controller: widget.controller,
           taskId: task.id,
           usersById: _usersById,
+          projectsById: {for (final project in _projects) project.id: project},
         ),
       ),
     );
@@ -287,7 +324,8 @@ class _TaskWorkspaceScreenState extends State<TaskWorkspaceScreen> {
           title: 'My Tasks',
           emptyMessage: 'You have no tasks assigned to you yet.',
           loader: widget.controller.myTasks,
-          assigneeLabel: _assigneeLabel,
+          assigneesLabel: _assigneesLabelFor,
+          projectName: _projectNameFor,
           createdByLabel: _createdByLabel,
           onOpenTask: _openTask,
         );
@@ -297,7 +335,8 @@ class _TaskWorkspaceScreenState extends State<TaskWorkspaceScreen> {
           title: 'All Tasks',
           emptyMessage: 'No tasks have been created yet.',
           loader: widget.controller.allTasks,
-          assigneeLabel: _assigneeLabel,
+          assigneesLabel: _assigneesLabelFor,
+          projectName: _projectNameFor,
           createdByLabel: _createdByLabel,
           onOpenTask: _openTask,
         );
@@ -307,7 +346,8 @@ class _TaskWorkspaceScreenState extends State<TaskWorkspaceScreen> {
           title: 'Completed',
           emptyMessage: 'No tasks have been completed yet.',
           loader: widget.controller.completedTasks,
-          assigneeLabel: _assigneeLabel,
+          assigneesLabel: _assigneesLabelFor,
+          projectName: _projectNameFor,
           createdByLabel: _createdByLabel,
           onOpenTask: _openTask,
         );
@@ -315,6 +355,10 @@ class _TaskWorkspaceScreenState extends State<TaskWorkspaceScreen> {
         return _CreateTaskPane(
           controller: widget.controller,
           users: _usersById.values.toList(growable: false),
+          projects: _projects,
+          onProjectCreated: (project) {
+            setState(() => _projects = [..._projects, project]);
+          },
           onCreated: _goToCreatedTasksView,
         );
       case _WorkspaceSection.profile:
@@ -430,7 +474,8 @@ class _TaskListPane extends StatefulWidget {
     required this.title,
     required this.emptyMessage,
     required this.loader,
-    required this.assigneeLabel,
+    required this.assigneesLabel,
+    required this.projectName,
     required this.createdByLabel,
     required this.onOpenTask,
   });
@@ -438,7 +483,8 @@ class _TaskListPane extends StatefulWidget {
   final String title;
   final String emptyMessage;
   final Future<List<Task>> Function() loader;
-  final String Function(int?) assigneeLabel;
+  final String Function(Task) assigneesLabel;
+  final String? Function(Task) projectName;
   final String Function(int?) createdByLabel;
   final Future<void> Function(Task) onOpenTask;
 
@@ -496,7 +542,8 @@ class _TaskListPaneState extends State<_TaskListPane> {
             separatorBuilder: (_, __) => const SizedBox(height: 12),
             itemBuilder: (context, index) => _TaskCard(
               task: tasks[index],
-              assigneeLabel: widget.assigneeLabel,
+              assigneesLabel: widget.assigneesLabel(tasks[index]),
+              projectName: widget.projectName(tasks[index]),
               createdByLabel: widget.createdByLabel,
               onTap: () async {
                 await widget.onOpenTask(tasks[index]);
@@ -514,13 +561,15 @@ class _TaskListPaneState extends State<_TaskListPane> {
 class _TaskCard extends StatelessWidget {
   const _TaskCard({
     required this.task,
-    required this.assigneeLabel,
+    required this.assigneesLabel,
+    required this.projectName,
     required this.createdByLabel,
     required this.onTap,
   });
 
   final Task task;
-  final String Function(int?) assigneeLabel;
+  final String assigneesLabel;
+  final String? projectName;
   final String Function(int?) createdByLabel;
   final VoidCallback onTap;
 
@@ -562,9 +611,11 @@ class _TaskCard extends StatelessWidget {
                 ),
               ],
               const SizedBox(height: 12),
-              // Type + discipline sit together as subtle tags; hidden while
-              // they're still "to be decided" to avoid noise.
-              if (task.type != TaskType.decide ||
+              // Project tag + (optionally) type/discipline tags. Project is
+              // always shown when known so the task's "home" is visible at a
+              // glance.
+              if (projectName != null ||
+                  task.type != TaskType.decide ||
                   task.discipline != TaskDiscipline.decide)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 10),
@@ -572,6 +623,8 @@ class _TaskCard extends StatelessWidget {
                     spacing: 6,
                     runSpacing: 6,
                     children: [
+                      if (projectName != null)
+                        TagChip(label: 'Project: $projectName'),
                       if (task.type != TaskType.decide)
                         TagChip(label: task.type.label),
                       if (task.discipline != TaskDiscipline.decide)
@@ -585,7 +638,7 @@ class _TaskCard extends StatelessWidget {
                 children: [
                   _MetaChip(
                     icon: Icons.person_outline,
-                    label: assigneeLabel(task.assigneeId),
+                    label: assigneesLabel,
                   ),
                   _MetaChip(
                     icon: Icons.badge_outlined,
@@ -912,11 +965,15 @@ class _CreateTaskPane extends StatefulWidget {
   const _CreateTaskPane({
     required this.controller,
     required this.users,
+    required this.projects,
+    required this.onProjectCreated,
     required this.onCreated,
   });
 
   final AuthController controller;
   final List<AuthUser> users;
+  final List<Project> projects;
+  final ValueChanged<Project> onProjectCreated;
   final VoidCallback onCreated;
 
   @override
@@ -930,11 +987,43 @@ class _CreateTaskPaneState extends State<_CreateTaskPane> {
   TaskStatus _status = TaskStatus.todo;
   TaskType _type = TaskType.decide;
   TaskDiscipline _discipline = TaskDiscipline.decide;
-  int? _assigneeId;
+  /// Users this task will be assigned to. A task can have more than one
+  /// assignee; ordering is the order the user ticked them.
+  final List<int> _assigneeIds = [];
+  int? _projectId;
   DateTime? _startDate;
   DateTime? _dueDate;
   bool _busy = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    // Default to the backend's built-in "Unidentified" project when it is
+    // present in the list; falls back to the first project otherwise, and to
+    // null when no projects have loaded yet (we send no project_id then).
+    _projectId = _defaultProjectId();
+  }
+
+  int? _defaultProjectId() {
+    if (widget.projects.isEmpty) return null;
+    final defaultProject = widget.projects.firstWhere(
+      (project) => project.isDefault,
+      orElse: () => widget.projects.first,
+    );
+    return defaultProject.id;
+  }
+
+  @override
+  void didUpdateWidget(_CreateTaskPane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // When the workspace loads projects (or a new one is created) and our
+    // dropdown has no value yet, adopt the default so the form validates.
+    if (_projectId == null ||
+        !widget.projects.any((project) => project.id == _projectId)) {
+      setState(() => _projectId = _defaultProjectId());
+    }
+  }
 
   @override
   void dispose() {
@@ -966,6 +1055,19 @@ class _CreateTaskPaneState extends State<_CreateTaskPane> {
     if (picked != null) setState(() => _dueDate = picked);
   }
 
+  Future<void> _createProject() async {
+    final created = await showDialog<Project>(
+      context: context,
+      builder: (_) => _NewProjectDialog(controller: widget.controller),
+    );
+    if (created == null || !mounted) return;
+    widget.onProjectCreated(created);
+    setState(() => _projectId = created.id);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Project "${created.name}" created.')),
+    );
+  }
+
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() {
@@ -981,7 +1083,8 @@ class _CreateTaskPaneState extends State<_CreateTaskPane> {
         discipline: _discipline,
         startAt: _startDate,
         dueAt: _dueDate,
-        assigneeId: _assigneeId,
+        assigneeIds: List.unmodifiable(_assigneeIds),
+        projectId: _projectId,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1084,23 +1187,22 @@ class _CreateTaskPaneState extends State<_CreateTaskPane> {
                       },
                     ),
                     const SizedBox(height: 16),
-                    DropdownButtonFormField<int?>(
-                      initialValue: _assigneeId,
-                      decoration:
-                          const InputDecoration(labelText: 'Assign to'),
-                      items: [
-                        const DropdownMenuItem<int?>(
-                          value: null,
-                          child: Text('Unassigned'),
-                        ),
-                        for (final user in widget.users)
-                          DropdownMenuItem<int?>(
-                            value: user.id,
-                            child: Text(user.displayName),
-                          ),
-                      ],
+                    _ProjectPickerField(
+                      projects: widget.projects,
+                      selectedProjectId: _projectId,
                       onChanged: (value) =>
-                          setState(() => _assigneeId = value),
+                          setState(() => _projectId = value),
+                      onCreateProject: _createProject,
+                    ),
+                    const SizedBox(height: 16),
+                    _AssigneePickerField(
+                      users: widget.users,
+                      selectedIds: _assigneeIds,
+                      onChanged: (ids) => setState(() {
+                        _assigneeIds
+                          ..clear()
+                          ..addAll(ids);
+                      }),
                     ),
                     const SizedBox(height: 16),
                     Row(
@@ -1255,3 +1357,306 @@ class _NotificationsDialogState extends State<_NotificationsDialog> {
 
 String _errorText(Object? error) =>
     error is AuthApiException ? error.message : 'Something went wrong.';
+
+/// A dropdown-shaped field that picks one project and offers a trailing
+/// "+ New" button to create one inline. When no projects have loaded yet it
+/// shows a disabled placeholder with the built-in "Unidentified" label so
+/// the user sees what the default would be.
+class _ProjectPickerField extends StatelessWidget {
+  const _ProjectPickerField({
+    required this.projects,
+    required this.selectedProjectId,
+    required this.onChanged,
+    required this.onCreateProject,
+  });
+
+  final List<Project> projects;
+  final int? selectedProjectId;
+  final ValueChanged<int?> onChanged;
+  final VoidCallback onCreateProject;
+
+  @override
+  Widget build(BuildContext context) {
+    // The "Unidentified" project sorts first on the server; keep that order.
+    final items = [
+      for (final project in projects)
+        DropdownMenuItem<int>(
+          value: project.id,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(child: Text(project.name)),
+              if (project.isDefault) ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .secondaryContainer,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    'default',
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSecondaryContainer,
+                        ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+    ];
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: DropdownButtonFormField<int>(
+            initialValue: selectedProjectId,
+            decoration: InputDecoration(
+              labelText: 'Project',
+              helperText: projects.isEmpty
+                  ? 'No projects loaded yet. Default will be "Unidentified".'
+                  : null,
+            ),
+            items: items,
+            onChanged: projects.isEmpty ? null : onChanged,
+            validator: (value) {
+              // The server defaults to "Unidentified" when no project_id is
+              // sent, so an empty selection is only an error when projects
+              // did load but none was picked.
+              if (projects.isNotEmpty && value == null) {
+                return 'Pick a project';
+              }
+              return null;
+            },
+          ),
+        ),
+        const SizedBox(width: 12),
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: OutlinedButton.icon(
+            onPressed: onCreateProject,
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('New'),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Multi-select assignee field. Shows a chip for each picked user and a menu
+/// of remaining users behind an "Add teammate" button. An empty picker means
+/// the task is unassigned (the server still accepts it).
+class _AssigneePickerField extends StatelessWidget {
+  const _AssigneePickerField({
+    required this.users,
+    required this.selectedIds,
+    required this.onChanged,
+  });
+
+  final List<AuthUser> users;
+  final List<int> selectedIds;
+  final ValueChanged<List<int>> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final userById = {for (final user in users) user.id: user};
+    final remaining =
+        users.where((user) => !selectedIds.contains(user.id)).toList();
+
+    void removeAt(int userId) {
+      final next = [...selectedIds]..remove(userId);
+      onChanged(next);
+    }
+
+    void addId(int userId) {
+      if (selectedIds.contains(userId)) return;
+      onChanged([...selectedIds, userId]);
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InputDecorator(
+          decoration: InputDecoration(
+            labelText: 'Assign to (one or more)',
+            helperText: selectedIds.isEmpty
+                ? 'Leave empty for "Unassigned".'
+                : '${selectedIds.length} assigned',
+          ),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              if (selectedIds.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Text(
+                    'No one yet',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              for (final id in selectedIds)
+                InputChip(
+                  label: Text(userById[id]?.displayName ?? 'User #$id'),
+                  onDeleted: () => removeAt(id),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: PopupMenuButton<int>(
+            enabled: remaining.isNotEmpty,
+            onSelected: addId,
+            itemBuilder: (context) => [
+              for (final user in remaining)
+                PopupMenuItem<int>(
+                  value: user.id,
+                  child: Text('${user.displayName} · ${user.employeeId}'),
+                ),
+            ],
+            child: OutlinedButton.icon(
+              // The button itself is decorative: taps bubble up to the menu.
+              onPressed: remaining.isEmpty ? null : () {},
+              icon: const Icon(Icons.person_add_alt_1, size: 18),
+              label: Text(
+                remaining.isEmpty ? 'Everyone added' : 'Add teammate',
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Dialog to create a new project from the task-create pane. Returns the
+/// created [Project] on submit, null on cancel.
+class _NewProjectDialog extends StatefulWidget {
+  const _NewProjectDialog({required this.controller});
+
+  final AuthController controller;
+
+  @override
+  State<_NewProjectDialog> createState() => _NewProjectDialogState();
+}
+
+class _NewProjectDialogState extends State<_NewProjectDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
+  final _descriptionController = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _descriptionController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final project = await widget.controller.createProject(
+        name: _nameController.text.trim(),
+        description: _descriptionController.text.trim(),
+      );
+      if (mounted) Navigator.pop(context, project);
+    } on AuthApiException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _error =
+            'Could not reach the server. Check the connection and try again.');
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('New project'),
+      content: SizedBox(
+        width: 380,
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextFormField(
+                controller: _nameController,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: 'Name'),
+                maxLength: 120,
+                validator: (value) {
+                  final text = value?.trim() ?? '';
+                  if (text.isEmpty) return 'Enter a project name';
+                  if (text.length > 120) {
+                    return 'Name must be 120 characters or fewer';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: _descriptionController,
+                minLines: 2,
+                maxLines: 4,
+                maxLength: 4000,
+                decoration: const InputDecoration(
+                  labelText: 'Description (optional)',
+                ),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _error!,
+                  style:
+                      TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _busy ? null : () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _busy ? null : _submit,
+          child: _busy
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Create'),
+        ),
+      ],
+    );
+  }
+}
