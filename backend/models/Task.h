@@ -61,6 +61,33 @@ struct NewTask
     std::optional<std::int64_t> parentTaskId;
 };
 
+// Partial update of an existing task. A disengaged outer optional means "the
+// client did not send this field — leave it unchanged". For nullable columns
+// the inner optional carries the new value, where nullopt means "clear it to
+// NULL". This two-level shape is what lets `"description": null` erase a
+// description while an absent "description" key leaves it alone.
+struct TaskUpdate
+{
+    std::int64_t taskId{0};
+    std::optional<std::string> title;
+    std::optional<std::optional<std::string>> description;
+    std::optional<std::string> status;
+    std::optional<std::string> type;
+    std::optional<std::string> discipline;
+    std::optional<std::optional<std::string>> dueAt;
+    std::optional<std::optional<std::string>> startAt;
+    std::optional<std::vector<std::int64_t>> assigneeIds;
+    std::optional<std::int64_t> projectId;
+
+    // True when nothing was supplied, so the caller can reject a no-op edit
+    // instead of bumping the version for no reason.
+    bool empty() const
+    {
+        return !title && !description && !status && !type && !discipline &&
+               !dueAt && !startAt && !assigneeIds && !projectId;
+    }
+};
+
 struct TaskNoteRecord
 {
     std::int64_t id;

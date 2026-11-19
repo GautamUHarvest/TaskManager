@@ -116,14 +116,23 @@ class _TaskWorkspaceScreenState extends State<TaskWorkspaceScreen> {
 
   /// Open the full-screen detail page for [task]. Returns when it is popped so
   /// the calling list can refresh (status/subtasks may have changed).
-  Future<void> _openTask(Task task) {
-    return Navigator.of(context).push(
-      MaterialPageRoute<void>(
+  ///
+  /// Resolves to the task's id when it was deleted from the detail screen, so
+  /// the list can drop that row at once instead of showing it until its own
+  /// refetch lands; null in every other case.
+  ///
+  /// [onTaskChanged] fires while the detail screen is still open, each time
+  /// the task's status is changed or it is edited, so the underlying row is
+  /// already correct by the time the user comes back.
+  Future<int?> _openTask(Task task, {ValueChanged<Task>? onTaskChanged}) {
+    return Navigator.of(context).push<int?>(
+      MaterialPageRoute<int?>(
         builder: (_) => TaskDetailScreen(
           controller: widget.controller,
           taskId: task.id,
           usersById: _usersById,
           projectsById: {for (final project in _projects) project.id: project},
+          onTaskChanged: onTaskChanged,
         ),
       ),
     );
@@ -486,7 +495,11 @@ class _TaskListPane extends StatefulWidget {
   final String Function(Task) assigneesLabel;
   final String? Function(Task) projectName;
   final String Function(int?) createdByLabel;
-  final Future<void> Function(Task) onOpenTask;
+  /// Opens the detail screen. Resolves to the id of a task deleted there,
+  /// else null. [onTaskChanged] fires for in-place status/edit updates while
+  /// that screen is open.
+  final Future<int?> Function(Task task, {ValueChanged<Task>? onTaskChanged})
+      onOpenTask;
 
   @override
   State<_TaskListPane> createState() => _TaskListPaneState();
@@ -494,6 +507,24 @@ class _TaskListPane extends StatefulWidget {
 
 class _TaskListPaneState extends State<_TaskListPane> {
   late Future<List<Task>> _future;
+
+  /// Tasks deleted from the detail screen. They are filtered out of the
+  /// rendered list immediately, so a deleted row can never reappear while the
+  /// refetch is in flight or if a cached response still carries it. Never
+  /// cleared: a deleted task is gone server-side for good, so the set stays
+  /// small and filtering it forever is harmless.
+  final Set<int> _deletedIds = <int>{};
+
+  /// Tasks updated from the detail screen, keyed by id. Applied over whatever
+  /// the last fetch returned so a status change or edit shows on the row
+  /// right away. A patch stops being applied once the fetched copy reaches
+  /// the same `version`, so a later edit by someone else is never shadowed by
+  /// our stale local copy.
+  final Map<int, Task> _patched = <int, Task>{};
+
+  /// Last successfully loaded list, kept so a refresh can leave the current
+  /// rows on screen instead of blanking to a spinner.
+  List<Task>? _lastTasks;
 
   @override
   void initState() {
@@ -515,10 +546,20 @@ class _TaskListPaneState extends State<_TaskListPane> {
       child: FutureBuilder<List<Task>>(
         future: _future,
         builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
+          if (snapshot.hasData) _lastTasks = snapshot.data;
+          final loaded = _lastTasks;
+          final refreshing =
+              snapshot.connectionState == ConnectionState.waiting;
+
+          // Nothing to show yet: first load, or an error before any data
+          // arrived. Once a list has loaded we keep showing it through a
+          // refresh instead of blanking to a spinner, so returning from a
+          // task's detail page lands straight back on the list with the
+          // change already applied.
+          if (loaded == null) {
+            if (refreshing) {
+              return const Center(child: CircularProgressIndicator());
+            }
             return ListView(
               children: [
                 _MessageCard(
@@ -531,13 +572,39 @@ class _TaskListPaneState extends State<_TaskListPane> {
               ],
             );
           }
-          final tasks = snapshot.data ?? const [];
+          final tasks = loaded
+              .where((task) => !_deletedIds.contains(task.id))
+              .map((task) {
+                // Prefer a locally-patched copy only while the fetched one is
+                // genuinely older — the request behind it may have been in
+                // flight when the edit landed, or served from cache.
+                final patch = _patched[task.id];
+                if (patch == null || task.version >= patch.version) {
+                  return task;
+                }
+                return patch;
+              })
+              .toList(growable: false);
+          // Thin bar while re-fetching, so a background refresh (or one that
+          // ends in an error and leaves these rows stale) is still visible.
+          Widget withRefreshBar(Widget child) => Column(
+                children: [
+                  SizedBox(
+                    height: 3,
+                    child: refreshing ? const LinearProgressIndicator() : null,
+                  ),
+                  Expanded(child: child),
+                ],
+              );
+
           if (tasks.isEmpty) {
-            return ListView(
-              children: [_MessageCard(message: widget.emptyMessage)],
+            return withRefreshBar(
+              ListView(
+                children: [_MessageCard(message: widget.emptyMessage)],
+              ),
             );
           }
-          return ListView.separated(
+          return withRefreshBar(ListView.separated(
             itemCount: tasks.length,
             separatorBuilder: (_, __) => const SizedBox(height: 12),
             itemBuilder: (context, index) => _TaskCard(
@@ -546,12 +613,26 @@ class _TaskListPaneState extends State<_TaskListPane> {
               projectName: widget.projectName(tasks[index]),
               createdByLabel: widget.createdByLabel,
               onTap: () async {
-                await widget.onOpenTask(tasks[index]);
+                final deletedId = await widget.onOpenTask(
+                  tasks[index],
+                  // Fires while the detail screen is open, so the row behind
+                  // it is already up to date when the user returns.
+                  onTaskChanged: (updated) {
+                    if (mounted) {
+                      setState(() => _patched[updated.id] = updated);
+                    }
+                  },
+                );
+                if (!mounted) return;
+                // Deleted down there: hide the row now, before the refetch.
+                if (deletedId != null) {
+                  setState(() => _deletedIds.add(deletedId));
+                }
                 // Refresh on return — status/subtasks may have changed.
-                if (mounted) _reload();
+                _reload();
               },
             ),
-          );
+          ));
         },
       ),
     );

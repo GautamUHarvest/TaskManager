@@ -28,9 +28,23 @@ class TaskRepository
     TaskRecord updateStatus(std::int64_t taskId,
                             const std::string &status,
                             std::int64_t actorId);
+    // Applies the engaged fields of `update`, bumps version/updated_at, and
+    // records an 'updated' task event. Throws std::invalid_argument when the
+    // task does not exist.
+    TaskRecord updateTask(const TaskUpdate &update, std::int64_t actorId);
+    // Deletes a task and the rows that reference it (notes, events,
+    // notifications; assignees and comments cascade). The caller must have
+    // already rejected tasks that still have subtasks — see countSubtasks.
+    void deleteTask(std::int64_t taskId);
+    std::int64_t countSubtasks(std::int64_t parentTaskId);
     std::optional<TaskRecord> findTask(std::int64_t id);
     std::vector<TaskRecord> listSubtasks(std::int64_t parentTaskId);
     std::vector<TaskNoteRecord> listNotes(std::int64_t taskId);
+
+    // --- Notes ---
+    std::optional<TaskNoteRecord> findNote(std::int64_t id);
+    TaskNoteRecord updateNote(std::int64_t id, const std::string &body);
+    void deleteNote(std::int64_t id);
     std::vector<UserRecord> listUsers();
     std::vector<NotificationRecord> listNotifications(std::int64_t recipientId);
     std::vector<TaskRecord> listAllTasks();
@@ -42,6 +56,13 @@ class TaskRepository
     CommentRecord addComment(const NewComment &comment);
     std::vector<CommentRecord> listComments(std::int64_t taskId);
     std::optional<CommentRecord> findComment(std::int64_t id);
+    CommentRecord updateComment(std::int64_t id, const std::string &body);
+    // Deletes a comment; its replies go with it via the comments
+    // parent_comment_id ON DELETE CASCADE (migration 006).
+    void deleteComment(std::int64_t id);
+    // Number of descendants that would cascade away with this comment, so the
+    // UI can warn before deleting a comment that has a thread under it.
+    std::int64_t countCommentDescendants(std::int64_t id);
 
     // --- Notifications ---
     void createNotification(std::int64_t recipientId,

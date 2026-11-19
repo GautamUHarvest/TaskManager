@@ -27,6 +27,18 @@ class TaskController
                      drogon::AdviceCallback &&callback);
     void changeStatus(const drogon::HttpRequestPtr &request,
                       drogon::AdviceCallback &&callback);
+    void updateTask(const drogon::HttpRequestPtr &request,
+                    drogon::AdviceCallback &&callback);
+    void deleteTask(const drogon::HttpRequestPtr &request,
+                    drogon::AdviceCallback &&callback);
+    void updateNote(const drogon::HttpRequestPtr &request,
+                    drogon::AdviceCallback &&callback);
+    void deleteNote(const drogon::HttpRequestPtr &request,
+                    drogon::AdviceCallback &&callback);
+    void updateComment(const drogon::HttpRequestPtr &request,
+                       drogon::AdviceCallback &&callback);
+    void deleteComment(const drogon::HttpRequestPtr &request,
+                       drogon::AdviceCallback &&callback);
     void taskDetail(const drogon::HttpRequestPtr &request,
                     drogon::AdviceCallback &&callback);
     void allUsers(const drogon::HttpRequestPtr &request,

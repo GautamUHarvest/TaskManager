@@ -66,6 +66,34 @@ class TaskService
     TaskRecord changeStatus(const std::string &accessToken,
                             std::int64_t taskId,
                             const std::string &status);
+
+    // --- Edit / delete -----------------------------------------------------
+    // Permission model (see apirequirement.md §4): a task may be edited by its
+    // creator or any of its assignees, but deleted only by its creator; a note
+    // or comment may be edited and deleted only by its author. A caller who is
+    // authenticated but not permitted gets ForbiddenError (HTTP 403).
+
+    // Applies the engaged fields of `update` (taskId is taken from it) and
+    // returns the task with a bumped version. Throws std::invalid_argument
+    // when nothing was supplied or the task does not exist.
+    TaskRecord editTask(const std::string &accessToken, TaskUpdate update);
+    // Deletes a task along with its notes, events, notifications, assignees
+    // and comments. Refuses with std::invalid_argument when the task still has
+    // subtasks — those must be dealt with first.
+    void deleteTask(const std::string &accessToken, std::int64_t taskId);
+
+    TaskNoteRecord editNote(const std::string &accessToken,
+                            std::int64_t noteId,
+                            const std::string &body);
+    void deleteNote(const std::string &accessToken, std::int64_t noteId);
+
+    CommentRecord editComment(const std::string &accessToken,
+                              std::int64_t commentId,
+                              const std::string &body);
+    // Returns how many nested replies were cascade-deleted along with it, so
+    // the caller can report it.
+    std::int64_t deleteComment(const std::string &accessToken,
+                               std::int64_t commentId);
     // Returns a task with its direct subtasks, notes, and comments. Throws
     // std::invalid_argument ("Task not found") if the id does not exist.
     TaskDetail taskDetail(const std::string &accessToken, std::int64_t taskId);

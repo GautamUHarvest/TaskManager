@@ -4,6 +4,7 @@
 #include <array>
 #include <cctype>
 #include <stdexcept>
+#include <utility>
 
 namespace taskmanager
 {
@@ -126,6 +127,91 @@ std::vector<std::int64_t> normalizeAssigneeIds(
         }
     }
     return unique;
+}
+
+// Shared body rule for notes and comments: non-empty after trimming, at most
+// 4000 characters. The SQLite CHECK on task_notes.body / comments.body
+// enforces non-emptiness too; this gives a readable 400 instead.
+std::string normalizeBody(const std::string &body)
+{
+    const std::string trimmed = trim(body);
+    if (trimmed.empty())
+    {
+        throw std::invalid_argument("Field 'body' is required");
+    }
+    if (trimmed.size() > 4000)
+    {
+        throw std::invalid_argument("Field 'body' is too long");
+    }
+    return trimmed;
+}
+
+// Marks a nullable-column value as "the client sent this field", where the
+// inner optional carries the new value (nullopt meaning SQL NULL). Built with
+// in_place so it cannot be mistaken for optional's converting assignment,
+// which behaves subtly when T is itself an optional.
+std::optional<std::optional<std::string>> fieldPresent(
+    std::optional<std::string> value)
+{
+    return std::optional<std::optional<std::string>>(std::in_place,
+                                                     std::move(value));
+}
+
+// Applies the same field rules as buildNewTask, but only to the fields the
+// client actually supplied. Fields left disengaged stay untouched.
+TaskUpdate normalizeTaskUpdate(TaskUpdate update)
+{
+    if (update.title)
+    {
+        const std::string trimmed = trim(*update.title);
+        if (trimmed.empty())
+        {
+            throw std::invalid_argument("Field 'title' must not be empty");
+        }
+        if (trimmed.size() > 200)
+        {
+            throw std::invalid_argument(
+                "Field 'title' must be 1 to 200 characters");
+        }
+        update.title = trimmed;
+    }
+    if (update.description)
+    {
+        update.description = fieldPresent(
+            normalizeOptionalText(*update.description, 4000, "description"));
+    }
+    if (update.status)
+    {
+        update.status = resolveStatus(update.status);
+    }
+    if (update.type)
+    {
+        update.type = resolveEnum(update.type, kTaskTypes, "type", "decide");
+    }
+    if (update.discipline)
+    {
+        update.discipline = resolveEnum(
+            update.discipline, kTaskDisciplines, "discipline", "decide");
+    }
+    if (update.dueAt)
+    {
+        update.dueAt =
+            fieldPresent(normalizeOptionalText(*update.dueAt, 64, "due_at"));
+    }
+    if (update.startAt)
+    {
+        update.startAt = fieldPresent(
+            normalizeOptionalText(*update.startAt, 64, "start_at"));
+    }
+    if (update.assigneeIds)
+    {
+        update.assigneeIds = normalizeAssigneeIds(*update.assigneeIds);
+    }
+    if (update.projectId && *update.projectId <= 0)
+    {
+        throw std::invalid_argument("Field 'project_id' must be a positive id");
+    }
+    return update;
 }
 
 NewTask buildNewTask(std::int64_t createdById,
@@ -397,6 +483,164 @@ TaskRecord TaskService::changeStatus(const std::string &accessToken,
     // supplies a non-empty value).
     const std::string resolved = resolveStatus(status);
     return repository_.updateStatus(taskId, resolved, user.id);
+}
+
+TaskRecord TaskService::editTask(const std::string &accessToken,
+                                 TaskUpdate update)
+{
+    const auto user = auth_.profile(accessToken);
+    if (update.taskId <= 0)
+    {
+        throw std::invalid_argument("Field 'task_id' must be a positive id");
+    }
+    if (update.empty())
+    {
+        throw std::invalid_argument(
+            "Supply at least one field to update");
+    }
+
+    const auto task = repository_.findTask(update.taskId);
+    if (!task)
+    {
+        throw std::invalid_argument("Task not found");
+    }
+    const bool isCreator = task->createdById == user.id;
+    const bool isAssignee = std::find(task->assigneeIds.begin(),
+                                      task->assigneeIds.end(),
+                                      user.id) != task->assigneeIds.end();
+    if (!isCreator && !isAssignee)
+    {
+        throw ForbiddenError(
+            "Only the task's creator or an assignee can edit it");
+    }
+
+    auto normalized = normalizeTaskUpdate(std::move(update));
+    // project_id has no DB-level foreign key (migration 006), so its existence
+    // is checked here, exactly as addTask does.
+    if (normalized.projectId &&
+        !repository_.findProject(*normalized.projectId))
+    {
+        throw std::invalid_argument(
+            "Field 'project_id' must reference an existing project");
+    }
+    return repository_.updateTask(normalized, user.id);
+}
+
+void TaskService::deleteTask(const std::string &accessToken,
+                             std::int64_t taskId)
+{
+    const auto user = auth_.profile(accessToken);
+    if (taskId <= 0)
+    {
+        throw std::invalid_argument("Field 'task_id' must be a positive id");
+    }
+    const auto task = repository_.findTask(taskId);
+    if (!task)
+    {
+        throw std::invalid_argument("Task not found");
+    }
+    if (task->createdById != user.id)
+    {
+        throw ForbiddenError("Only the task's creator can delete it");
+    }
+    // Deleting a parent would orphan its children, and the tasks
+    // parent_task_id foreign key is ON DELETE RESTRICT anyway. Refuse early
+    // with a message that says how many are in the way.
+    const auto subtasks = repository_.countSubtasks(taskId);
+    if (subtasks > 0)
+    {
+        throw std::invalid_argument(
+            "Cannot delete a task that still has " + std::to_string(subtasks) +
+            (subtasks == 1 ? " subtask. Delete it first."
+                           : " subtasks. Delete them first."));
+    }
+    repository_.deleteTask(taskId);
+}
+
+TaskNoteRecord TaskService::editNote(const std::string &accessToken,
+                                     std::int64_t noteId,
+                                     const std::string &body)
+{
+    const auto user = auth_.profile(accessToken);
+    if (noteId <= 0)
+    {
+        throw std::invalid_argument("Field 'note_id' must be a positive id");
+    }
+    const auto note = repository_.findNote(noteId);
+    if (!note)
+    {
+        throw std::invalid_argument("Note not found");
+    }
+    if (note->authorId != user.id)
+    {
+        throw ForbiddenError("Only the note's author can edit it");
+    }
+    return repository_.updateNote(noteId, normalizeBody(body));
+}
+
+void TaskService::deleteNote(const std::string &accessToken,
+                             std::int64_t noteId)
+{
+    const auto user = auth_.profile(accessToken);
+    if (noteId <= 0)
+    {
+        throw std::invalid_argument("Field 'note_id' must be a positive id");
+    }
+    const auto note = repository_.findNote(noteId);
+    if (!note)
+    {
+        throw std::invalid_argument("Note not found");
+    }
+    if (note->authorId != user.id)
+    {
+        throw ForbiddenError("Only the note's author can delete it");
+    }
+    repository_.deleteNote(noteId);
+}
+
+CommentRecord TaskService::editComment(const std::string &accessToken,
+                                       std::int64_t commentId,
+                                       const std::string &body)
+{
+    const auto user = auth_.profile(accessToken);
+    if (commentId <= 0)
+    {
+        throw std::invalid_argument("Field 'comment_id' must be a positive id");
+    }
+    const auto comment = repository_.findComment(commentId);
+    if (!comment)
+    {
+        throw std::invalid_argument("Comment not found");
+    }
+    if (comment->authorId != user.id)
+    {
+        throw ForbiddenError("Only the comment's author can edit it");
+    }
+    return repository_.updateComment(commentId, normalizeBody(body));
+}
+
+std::int64_t TaskService::deleteComment(const std::string &accessToken,
+                                        std::int64_t commentId)
+{
+    const auto user = auth_.profile(accessToken);
+    if (commentId <= 0)
+    {
+        throw std::invalid_argument("Field 'comment_id' must be a positive id");
+    }
+    const auto comment = repository_.findComment(commentId);
+    if (!comment)
+    {
+        throw std::invalid_argument("Comment not found");
+    }
+    if (comment->authorId != user.id)
+    {
+        throw ForbiddenError("Only the comment's author can delete it");
+    }
+    // Replies cascade (comments.parent_comment_id ON DELETE CASCADE), so count
+    // them before the delete to report what went with it.
+    const auto replies = repository_.countCommentDescendants(commentId);
+    repository_.deleteComment(commentId);
+    return replies;
 }
 
 TaskDetail TaskService::taskDetail(const std::string &accessToken,

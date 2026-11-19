@@ -108,6 +108,114 @@ class DataApi {
     return Task.fromJson(json['task'] as Map<String, dynamic>);
   }
 
+  /// Edit an existing task via `POST /task/update`. Only the fields you pass
+  /// are sent; anything omitted keeps its current server-side value.
+  ///
+  /// Passing `null` for a nullable field means "leave unchanged", not "clear
+  /// it" — to actually clear one, set the matching `clear*` flag, which sends
+  /// an explicit JSON null. The backend allows this for the task's creator or
+  /// any of its assignees.
+  Future<Task> updateTask({
+    required String token,
+    required int taskId,
+    String? title,
+    String? description,
+    bool clearDescription = false,
+    TaskStatus? status,
+    TaskType? type,
+    TaskDiscipline? discipline,
+    DateTime? startAt,
+    bool clearStartAt = false,
+    DateTime? dueAt,
+    bool clearDueAt = false,
+    List<int>? assigneeIds,
+    int? projectId,
+  }) async {
+    final body = <String, dynamic>{
+      'task_id': taskId,
+      if (title != null) 'title': title,
+      if (clearDescription)
+        'description': null
+      else if (description != null)
+        'description': description,
+      if (status != null) 'status': status.wire,
+      if (type != null) 'type': type.wire,
+      if (discipline != null) 'discipline': discipline.wire,
+      if (clearStartAt)
+        'start_at': null
+      else if (startAt != null)
+        'start_at': startAt.toUtc().toIso8601String(),
+      if (clearDueAt)
+        'due_at': null
+      else if (dueAt != null)
+        'due_at': dueAt.toUtc().toIso8601String(),
+      if (assigneeIds != null) 'assignee_ids': assigneeIds,
+      if (projectId != null) 'project_id': projectId,
+    };
+    final json = await _client.post('/task/update', body, token: token);
+    return Task.fromJson(json['task'] as Map<String, dynamic>);
+  }
+
+  /// Delete a task via `POST /task/delete`. Only the creator may do this, and
+  /// the server refuses (400) while the task still has subtasks. Its notes,
+  /// comments, events and notifications go with it.
+  Future<void> deleteTask({
+    required String token,
+    required int taskId,
+  }) async {
+    await _client.post('/task/delete', {'task_id': taskId}, token: token);
+  }
+
+  /// Edit a note's body via `POST /task/note/update`. Author only.
+  Future<TaskNote> updateNote({
+    required String token,
+    required int noteId,
+    required String body,
+  }) async {
+    final json = await _client.post(
+      '/task/note/update',
+      {'note_id': noteId, 'body': body},
+      token: token,
+    );
+    return TaskNote.fromJson(json['note'] as Map<String, dynamic>);
+  }
+
+  /// Delete a note via `POST /task/note/delete`. Author only.
+  Future<void> deleteNote({
+    required String token,
+    required int noteId,
+  }) async {
+    await _client.post('/task/note/delete', {'note_id': noteId}, token: token);
+  }
+
+  /// Edit a comment's body via `POST /task/comment/update`. Author only.
+  Future<TaskComment> updateComment({
+    required String token,
+    required int commentId,
+    required String body,
+  }) async {
+    final json = await _client.post(
+      '/task/comment/update',
+      {'comment_id': commentId, 'body': body},
+      token: token,
+    );
+    return TaskComment.fromJson(json['comment'] as Map<String, dynamic>);
+  }
+
+  /// Delete a comment via `POST /task/comment/delete`. Author only. Nested
+  /// replies cascade; the returned count is how many went with it.
+  Future<int> deleteComment({
+    required String token,
+    required int commentId,
+  }) async {
+    final json = await _client.post(
+      '/task/comment/delete',
+      {'comment_id': commentId},
+      token: token,
+    );
+    return json['deleted_reply_count'] as int? ?? 0;
+  }
+
   /// Fetch a task together with its direct subtasks and notes via
   /// `GET /task/detail?task_id=...`. Cache-busted so a note/status change made
   /// moments earlier is reflected on reload.

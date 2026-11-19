@@ -331,6 +331,30 @@ std::int64_t insertTask(Connection &connection, const NewTask &task)
     return taskId;
 }
 
+// Human-readable summary of which fields an edit touched, for the task_events
+// details column (e.g. "title, status, assignees").
+std::string describeUpdate(const TaskUpdate &update)
+{
+    std::string summary;
+    const auto add = [&summary](const char *name) {
+        if (!summary.empty())
+        {
+            summary += ", ";
+        }
+        summary += name;
+    };
+    if (update.title) add("title");
+    if (update.description) add("description");
+    if (update.status) add("status");
+    if (update.type) add("type");
+    if (update.discipline) add("discipline");
+    if (update.dueAt) add("due_at");
+    if (update.startAt) add("start_at");
+    if (update.assigneeIds) add("assignees");
+    if (update.projectId) add("project");
+    return "Updated " + summary;
+}
+
 // Appends a row to the task_events audit log. event_type must be one of the
 // values allowed by the task_events CHECK constraint.
 void insertEvent(Connection &connection,
@@ -514,6 +538,163 @@ TaskRecord TaskRepository::updateStatus(std::int64_t taskId,
     }
 }
 
+TaskRecord TaskRepository::updateTask(const TaskUpdate &update,
+                                      std::int64_t actorId)
+{
+    Connection connection(databasePath_);
+    connection.execute("BEGIN IMMEDIATE");
+    try
+    {
+        // Confirm the task exists first: a zero-row UPDATE would otherwise
+        // look like a successful edit of a task that isn't there.
+        {
+            Statement exists(connection.get(),
+                             "SELECT 1 FROM tasks WHERE id = ?1");
+            exists.bindInt64(1, update.taskId);
+            if (exists.step() != SQLITE_ROW)
+            {
+                throw std::invalid_argument("Task not found");
+            }
+        }
+
+        // Build the SET list from the engaged fields only, numbering
+        // placeholders in the exact order they are bound below. version and
+        // updated_at always move, so an assignee-only edit still bumps them.
+        std::vector<std::string> assignments;
+        int placeholders = 0;
+        const auto column = [&](const char *name) {
+            ++placeholders;
+            assignments.push_back(std::string(name) + " = ?" +
+                                  std::to_string(placeholders));
+        };
+        if (update.title) column("title");
+        if (update.description) column("description");
+        if (update.status) column("status");
+        if (update.type) column("type");
+        if (update.discipline) column("discipline");
+        if (update.dueAt) column("due_at");
+        if (update.startAt) column("start_at");
+        if (update.projectId) column("project_id");
+
+        std::string sql =
+            "UPDATE tasks SET version = version + 1, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+        for (const auto &assignment : assignments)
+        {
+            sql += ", " + assignment;
+        }
+        sql += " WHERE id = ?" + std::to_string(placeholders + 1);
+
+        {
+            Statement statement(connection.get(), sql);
+            int bound = 0;
+            if (update.title) statement.bindText(++bound, *update.title);
+            if (update.description)
+                statement.bindOptText(++bound, *update.description);
+            if (update.status) statement.bindText(++bound, *update.status);
+            if (update.type) statement.bindText(++bound, *update.type);
+            if (update.discipline)
+                statement.bindText(++bound, *update.discipline);
+            if (update.dueAt) statement.bindOptText(++bound, *update.dueAt);
+            if (update.startAt) statement.bindOptText(++bound, *update.startAt);
+            if (update.projectId)
+                statement.bindInt64(++bound, *update.projectId);
+            statement.bindInt64(++bound, update.taskId);
+            statement.step();
+        }
+
+        // Assignees live in a junction table, so a change is a full replace.
+        if (update.assigneeIds)
+        {
+            Statement clear(connection.get(),
+                            "DELETE FROM task_assignees WHERE task_id = ?1");
+            clear.bindInt64(1, update.taskId);
+            clear.step();
+            for (const auto userId : *update.assigneeIds)
+            {
+                Statement insert(connection.get(),
+                                 "INSERT INTO task_assignees (task_id, user_id)"
+                                 " VALUES (?1, ?2)");
+                insert.bindInt64(1, update.taskId);
+                insert.bindInt64(2, userId);
+                insert.step();
+            }
+        }
+
+        insertEvent(connection,
+                    update.taskId,
+                    actorId,
+                    "updated",
+                    describeUpdate(update));
+
+        auto updated = taskById(connection, update.taskId);
+        connection.execute("COMMIT");
+        return updated;
+    }
+    catch (...)
+    {
+        const int errorCode = sqlite3_extended_errcode(connection.get());
+        connection.execute("ROLLBACK");
+        if ((errorCode & 0xff) == SQLITE_CONSTRAINT)
+        {
+            throw std::invalid_argument(
+                "Invalid task update: assignee or project does not exist, or a "
+                "field violates a constraint");
+        }
+        throw;
+    }
+}
+
+void TaskRepository::deleteTask(std::int64_t taskId)
+{
+    Connection connection(databasePath_);
+    connection.execute("BEGIN IMMEDIATE");
+    try
+    {
+        // task_notes, task_events and notifications reference tasks with
+        // ON DELETE RESTRICT (migration 001), so they have to be cleared by
+        // hand and in this order. task_assignees and comments are
+        // ON DELETE CASCADE (migration 006) and go automatically — and
+        // comment replies cascade from their parent comment.
+        for (const char *sql :
+             {"DELETE FROM task_notes WHERE task_id = ?1",
+              "DELETE FROM task_events WHERE task_id = ?1",
+              "DELETE FROM notifications WHERE task_id = ?1",
+              "DELETE FROM tasks WHERE id = ?1"})
+        {
+            Statement statement(connection.get(), sql);
+            statement.bindInt64(1, taskId);
+            statement.step();
+        }
+        connection.execute("COMMIT");
+    }
+    catch (...)
+    {
+        const int errorCode = sqlite3_extended_errcode(connection.get());
+        connection.execute("ROLLBACK");
+        if ((errorCode & 0xff) == SQLITE_CONSTRAINT)
+        {
+            throw std::invalid_argument(
+                "Cannot delete this task: another record still references it");
+        }
+        throw;
+    }
+}
+
+std::int64_t TaskRepository::countSubtasks(std::int64_t parentTaskId)
+{
+    Connection connection(databasePath_);
+    Statement statement(
+        connection.get(),
+        "SELECT COUNT(*) FROM tasks WHERE parent_task_id = ?1");
+    statement.bindInt64(1, parentTaskId);
+    if (statement.step() != SQLITE_ROW)
+    {
+        return 0;
+    }
+    return statement.int64Column(0);
+}
+
 std::optional<TaskRecord> TaskRepository::findTask(std::int64_t id)
 {
     auto tasks = queryTasks(databasePath_, "WHERE id = ?1", id);
@@ -545,6 +726,68 @@ std::vector<TaskNoteRecord> TaskRepository::listNotes(std::int64_t taskId)
         notes.push_back(noteFromStatement(statement));
     }
     return notes;
+}
+
+std::optional<TaskNoteRecord> TaskRepository::findNote(std::int64_t id)
+{
+    Connection connection(databasePath_);
+    Statement statement(connection.get(),
+                        std::string("SELECT ") + kNoteColumns +
+                            " FROM task_notes WHERE id = ?1");
+    statement.bindInt64(1, id);
+    if (statement.step() != SQLITE_ROW)
+    {
+        return std::nullopt;
+    }
+    return noteFromStatement(statement);
+}
+
+TaskNoteRecord TaskRepository::updateNote(std::int64_t id,
+                                          const std::string &body)
+{
+    Connection connection(databasePath_);
+    connection.execute("BEGIN IMMEDIATE");
+    try
+    {
+        Statement update(
+            connection.get(),
+            "UPDATE task_notes SET body = ?1, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?2");
+        update.bindText(1, body);
+        update.bindInt64(2, id);
+        update.step();
+
+        Statement select(connection.get(),
+                         std::string("SELECT ") + kNoteColumns +
+                             " FROM task_notes WHERE id = ?1");
+        select.bindInt64(1, id);
+        if (select.step() != SQLITE_ROW)
+        {
+            throw std::invalid_argument("Note not found");
+        }
+        auto updated = noteFromStatement(select);
+        connection.execute("COMMIT");
+        return updated;
+    }
+    catch (...)
+    {
+        const int errorCode = sqlite3_extended_errcode(connection.get());
+        connection.execute("ROLLBACK");
+        if ((errorCode & 0xff) == SQLITE_CONSTRAINT)
+        {
+            throw std::invalid_argument("Invalid note: the body is empty");
+        }
+        throw;
+    }
+}
+
+void TaskRepository::deleteNote(std::int64_t id)
+{
+    Connection connection(databasePath_);
+    Statement statement(connection.get(),
+                        "DELETE FROM task_notes WHERE id = ?1");
+    statement.bindInt64(1, id);
+    statement.step();
 }
 
 std::vector<UserRecord> TaskRepository::listUsers()
@@ -814,6 +1057,80 @@ std::optional<CommentRecord> TaskRepository::findComment(std::int64_t id)
     record.createdAt = statement.textColumn(5);
     record.updatedAt = statement.textColumn(6);
     return record;
+}
+
+CommentRecord TaskRepository::updateComment(std::int64_t id,
+                                            const std::string &body)
+{
+    Connection connection(databasePath_);
+    connection.execute("BEGIN IMMEDIATE");
+    try
+    {
+        Statement update(
+            connection.get(),
+            "UPDATE comments SET body = ?1, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?2");
+        update.bindText(1, body);
+        update.bindInt64(2, id);
+        update.step();
+
+        Statement select(
+            connection.get(),
+            "SELECT id, task_id, author_id, parent_comment_id, body, "
+            "created_at, updated_at FROM comments WHERE id = ?1");
+        select.bindInt64(1, id);
+        if (select.step() != SQLITE_ROW)
+        {
+            throw std::invalid_argument("Comment not found");
+        }
+        CommentRecord record;
+        record.id = select.int64Column(0);
+        record.taskId = select.int64Column(1);
+        record.authorId = select.int64Column(2);
+        record.parentCommentId = select.optInt64Column(3);
+        record.body = select.textColumn(4);
+        record.createdAt = select.textColumn(5);
+        record.updatedAt = select.textColumn(6);
+        connection.execute("COMMIT");
+        return record;
+    }
+    catch (...)
+    {
+        const int errorCode = sqlite3_extended_errcode(connection.get());
+        connection.execute("ROLLBACK");
+        if ((errorCode & 0xff) == SQLITE_CONSTRAINT)
+        {
+            throw std::invalid_argument("Invalid comment: the body is empty");
+        }
+        throw;
+    }
+}
+
+void TaskRepository::deleteComment(std::int64_t id)
+{
+    Connection connection(databasePath_);
+    Statement statement(connection.get(), "DELETE FROM comments WHERE id = ?1");
+    statement.bindInt64(1, id);
+    statement.step();
+}
+
+std::int64_t TaskRepository::countCommentDescendants(std::int64_t id)
+{
+    Connection connection(databasePath_);
+    Statement statement(
+        connection.get(),
+        "WITH RECURSIVE thread(id) AS ("
+        "  SELECT id FROM comments WHERE parent_comment_id = ?1"
+        "  UNION ALL"
+        "  SELECT c.id FROM comments c "
+        "    JOIN thread t ON c.parent_comment_id = t.id"
+        ") SELECT COUNT(*) FROM thread");
+    statement.bindInt64(1, id);
+    if (statement.step() != SQLITE_ROW)
+    {
+        return 0;
+    }
+    return statement.int64Column(0);
 }
 
 // --- Notifications ---

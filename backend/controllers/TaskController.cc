@@ -165,6 +165,51 @@ std::vector<std::int64_t> optionalInt64Array(const Json::Value &body,
     return result;
 }
 
+// --- Partial-update (PATCH-style) readers --------------------------------
+// The optional* helpers above collapse "key absent" and "key present but
+// null" into a single nullopt, which is right for create but wrong for edit:
+// on an edit an absent key means "leave this column alone" while an explicit
+// null means "clear it". These return an engaged outer optional only when the
+// key is actually present in the body.
+
+std::optional<std::string> patchString(const Json::Value &body,
+                                       const char *field)
+{
+    if (!body.isMember(field))
+    {
+        return std::nullopt;
+    }
+    if (!body[field].isString())
+    {
+        throw std::invalid_argument(std::string("Field '") + field +
+                                    "' must be a string");
+    }
+    return body[field].asString();
+}
+
+std::optional<std::optional<std::string>> patchNullableString(
+    const Json::Value &body, const char *field)
+{
+    // in_place is deliberate: optional's converting assignment/construction is
+    // subtle when the contained type is itself an optional, and this spells
+    // out "outer engaged (field present), inner = the value or NULL".
+    using Patch = std::optional<std::optional<std::string>>;
+    if (!body.isMember(field))
+    {
+        return std::nullopt;
+    }
+    if (body[field].isNull())
+    {
+        return Patch(std::in_place, std::nullopt);
+    }
+    if (!body[field].isString())
+    {
+        throw std::invalid_argument(std::string("Field '") + field +
+                                    "' must be a string or null");
+    }
+    return Patch(std::in_place, body[field].asString());
+}
+
 drogon::HttpResponsePtr jsonResponse(drogon::HttpStatusCode status,
                                      const Json::Value &body)
 {
@@ -432,6 +477,119 @@ void TaskController::changeStatus(const drogon::HttpRequestPtr &request,
             token, requiredInt64(body, "task_id"), requiredString(body, "status"));
         Json::Value response;
         response["task"] = taskJson(updated);
+        return jsonResponse(drogon::k200OK, response);
+    });
+}
+
+void TaskController::updateTask(const drogon::HttpRequestPtr &request,
+                                drogon::AdviceCallback &&callback)
+{
+    const auto token = bearerToken(request);
+    const auto body = requiredBody(request);
+    run(request, std::move(callback), [this, token, body]() {
+        TaskUpdate update;
+        update.taskId = requiredInt64(body, "task_id");
+        update.title = patchString(body, "title");
+        update.description = patchNullableString(body, "description");
+        update.status = patchString(body, "status");
+        update.type = patchString(body, "type");
+        update.discipline = patchString(body, "discipline");
+        update.dueAt = patchNullableString(body, "due_at");
+        update.startAt = patchNullableString(body, "start_at");
+        // A present assignee_ids (null, [] or a list) always means "replace
+        // the assignee set"; absent means leave it as-is.
+        if (body.isMember("assignee_ids"))
+        {
+            update.assigneeIds = optionalInt64Array(body, "assignee_ids");
+        }
+        // project_id is NOT NULL, so there is no "clear it" case.
+        if (body.isMember("project_id"))
+        {
+            update.projectId = requiredInt64(body, "project_id");
+        }
+
+        Json::Value response;
+        response["task"] =
+            taskJson(service_.editTask(token, std::move(update)));
+        return jsonResponse(drogon::k200OK, response);
+    });
+}
+
+void TaskController::deleteTask(const drogon::HttpRequestPtr &request,
+                                drogon::AdviceCallback &&callback)
+{
+    const auto token = bearerToken(request);
+    const auto body = requiredBody(request);
+    run(request, std::move(callback), [this, token, body]() {
+        const auto taskId = requiredInt64(body, "task_id");
+        service_.deleteTask(token, taskId);
+        Json::Value response;
+        response["message"] = "Task deleted";
+        response["deleted_task_id"] = Json::Int64(taskId);
+        return jsonResponse(drogon::k200OK, response);
+    });
+}
+
+void TaskController::updateNote(const drogon::HttpRequestPtr &request,
+                                drogon::AdviceCallback &&callback)
+{
+    const auto token = bearerToken(request);
+    const auto body = requiredBody(request);
+    run(request, std::move(callback), [this, token, body]() {
+        const auto updated = service_.editNote(token,
+                                               requiredInt64(body, "note_id"),
+                                               requiredString(body, "body"));
+        Json::Value response;
+        response["message"] = "Note updated";
+        response["note"] = noteJson(updated);
+        return jsonResponse(drogon::k200OK, response);
+    });
+}
+
+void TaskController::deleteNote(const drogon::HttpRequestPtr &request,
+                                drogon::AdviceCallback &&callback)
+{
+    const auto token = bearerToken(request);
+    const auto body = requiredBody(request);
+    run(request, std::move(callback), [this, token, body]() {
+        const auto noteId = requiredInt64(body, "note_id");
+        service_.deleteNote(token, noteId);
+        Json::Value response;
+        response["message"] = "Note deleted";
+        response["deleted_note_id"] = Json::Int64(noteId);
+        return jsonResponse(drogon::k200OK, response);
+    });
+}
+
+void TaskController::updateComment(const drogon::HttpRequestPtr &request,
+                                   drogon::AdviceCallback &&callback)
+{
+    const auto token = bearerToken(request);
+    const auto body = requiredBody(request);
+    run(request, std::move(callback), [this, token, body]() {
+        const auto updated =
+            service_.editComment(token,
+                                 requiredInt64(body, "comment_id"),
+                                 requiredString(body, "body"));
+        Json::Value response;
+        response["message"] = "Comment updated";
+        response["comment"] = commentJson(updated);
+        return jsonResponse(drogon::k200OK, response);
+    });
+}
+
+void TaskController::deleteComment(const drogon::HttpRequestPtr &request,
+                                   drogon::AdviceCallback &&callback)
+{
+    const auto token = bearerToken(request);
+    const auto body = requiredBody(request);
+    run(request, std::move(callback), [this, token, body]() {
+        const auto commentId = requiredInt64(body, "comment_id");
+        const auto deletedReplies = service_.deleteComment(token, commentId);
+        Json::Value response;
+        response["message"] = "Comment deleted";
+        response["deleted_comment_id"] = Json::Int64(commentId);
+        response["deleted_reply_count"] = Json::Int64(deletedReplies);
         return jsonResponse(drogon::k200OK, response);
     });
 }

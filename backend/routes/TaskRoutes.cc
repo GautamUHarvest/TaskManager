@@ -22,12 +22,18 @@ namespace
 // same-origin deployment never sends these OPTIONS requests.
 bool isTaskRoute(const std::string &path)
 {
-    constexpr std::array<std::string_view, 13> paths = {
+    constexpr std::array<std::string_view, 19> paths = {
         "/api/task/add",
         "/api/task/subtask",
         "/api/task/note",
+        "/api/task/note/update",
+        "/api/task/note/delete",
         "/api/task/comment",
+        "/api/task/comment/update",
+        "/api/task/comment/delete",
         "/api/task/status",
+        "/api/task/update",
+        "/api/task/delete",
         "/api/task/detail",
         "/api/task/all",
         "/api/task/mine",
@@ -41,12 +47,18 @@ bool isTaskRoute(const std::string &path)
 
 std::string expectedMethod(const std::string &path)
 {
-    constexpr std::array<std::string_view, 6> postPaths = {
+    constexpr std::array<std::string_view, 12> postPaths = {
         "/api/task/add",
         "/api/task/subtask",
         "/api/task/note",
+        "/api/task/note/update",
+        "/api/task/note/delete",
         "/api/task/comment",
+        "/api/task/comment/update",
+        "/api/task/comment/delete",
         "/api/task/status",
+        "/api/task/update",
+        "/api/task/delete",
         "/api/project/add"};
     return std::find(postPaths.begin(), postPaths.end(), path) != postPaths.end()
                ? "POST"
@@ -178,6 +190,56 @@ void registerTaskRoutes(const std::shared_ptr<TaskController> &controller)
         [controller](const drogon::HttpRequestPtr &request,
                      drogon::AdviceCallback &&callback) {
             controller->changeStatus(request, std::move(callback));
+        },
+        {drogon::Post, "taskmanager::ErrorMiddleware"});
+
+    // Edit / delete. All POST (the frontend's ApiClient only speaks GET and
+    // POST), with the target id in the JSON body.
+    app.registerHandler(
+        "/api/task/update",
+        [controller](const drogon::HttpRequestPtr &request,
+                     drogon::AdviceCallback &&callback) {
+            controller->updateTask(request, std::move(callback));
+        },
+        {drogon::Post, "taskmanager::ErrorMiddleware"});
+
+    app.registerHandler(
+        "/api/task/delete",
+        [controller](const drogon::HttpRequestPtr &request,
+                     drogon::AdviceCallback &&callback) {
+            controller->deleteTask(request, std::move(callback));
+        },
+        {drogon::Post, "taskmanager::ErrorMiddleware"});
+
+    app.registerHandler(
+        "/api/task/note/update",
+        [controller](const drogon::HttpRequestPtr &request,
+                     drogon::AdviceCallback &&callback) {
+            controller->updateNote(request, std::move(callback));
+        },
+        {drogon::Post, "taskmanager::ErrorMiddleware"});
+
+    app.registerHandler(
+        "/api/task/note/delete",
+        [controller](const drogon::HttpRequestPtr &request,
+                     drogon::AdviceCallback &&callback) {
+            controller->deleteNote(request, std::move(callback));
+        },
+        {drogon::Post, "taskmanager::ErrorMiddleware"});
+
+    app.registerHandler(
+        "/api/task/comment/update",
+        [controller](const drogon::HttpRequestPtr &request,
+                     drogon::AdviceCallback &&callback) {
+            controller->updateComment(request, std::move(callback));
+        },
+        {drogon::Post, "taskmanager::ErrorMiddleware"});
+
+    app.registerHandler(
+        "/api/task/comment/delete",
+        [controller](const drogon::HttpRequestPtr &request,
+                     drogon::AdviceCallback &&callback) {
+            controller->deleteComment(request, std::move(callback));
         },
         {drogon::Post, "taskmanager::ErrorMiddleware"});
 

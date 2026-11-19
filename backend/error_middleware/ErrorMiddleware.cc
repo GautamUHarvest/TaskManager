@@ -102,6 +102,11 @@ void ErrorMiddleware::handleException(
         callback(errorResponse(drogon::k401Unauthorized, unauthorized->what()));
         return;
     }
+    if (const auto *forbidden = dynamic_cast<const ForbiddenError *>(&error))
+    {
+        callback(errorResponse(drogon::k403Forbidden, forbidden->what()));
+        return;
+    }
     if (const auto *rateLimit =
             dynamic_cast<const TooManyRequestsError *>(&error))
     {

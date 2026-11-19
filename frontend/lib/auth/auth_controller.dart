@@ -211,6 +211,69 @@ class AuthController extends ChangeNotifier {
         (token) => data.changeStatus(token: token, taskId: taskId, status: status),
       );
 
+  // --- Edit / delete --------------------------------------------------------
+  // The server owns the permission rules (task: creator or assignee may edit,
+  // creator only may delete; note/comment: author only) and answers 403 when
+  // they are not met. The UI hides the controls as a convenience, but never
+  // relies on that for enforcement.
+
+  Future<Task> updateTask({
+    required int taskId,
+    String? title,
+    String? description,
+    bool clearDescription = false,
+    TaskStatus? status,
+    TaskType? type,
+    TaskDiscipline? discipline,
+    DateTime? startAt,
+    bool clearStartAt = false,
+    DateTime? dueAt,
+    bool clearDueAt = false,
+    List<int>? assigneeIds,
+    int? projectId,
+  }) =>
+      _authorized((token) => data.updateTask(
+            token: token,
+            taskId: taskId,
+            title: title,
+            description: description,
+            clearDescription: clearDescription,
+            status: status,
+            type: type,
+            discipline: discipline,
+            startAt: startAt,
+            clearStartAt: clearStartAt,
+            dueAt: dueAt,
+            clearDueAt: clearDueAt,
+            assigneeIds: assigneeIds,
+            projectId: projectId,
+          ));
+
+  Future<void> deleteTask(int taskId) =>
+      _authorized((token) => data.deleteTask(token: token, taskId: taskId));
+
+  Future<TaskNote> updateNote({required int noteId, required String body}) =>
+      _authorized(
+        (token) => data.updateNote(token: token, noteId: noteId, body: body),
+      );
+
+  Future<void> deleteNote(int noteId) =>
+      _authorized((token) => data.deleteNote(token: token, noteId: noteId));
+
+  Future<TaskComment> updateComment({
+    required int commentId,
+    required String body,
+  }) =>
+      _authorized(
+        (token) =>
+            data.updateComment(token: token, commentId: commentId, body: body),
+      );
+
+  /// Deletes a comment and returns how many nested replies cascaded with it.
+  Future<int> deleteComment(int commentId) => _authorized(
+        (token) => data.deleteComment(token: token, commentId: commentId),
+      );
+
   /// Runs [action] with a fresh access token, refreshing proactively before
   /// expiry and once more if the server still answers 401.
   Future<T> _authorized<T>(Future<T> Function(String token) action) async {

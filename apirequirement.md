@@ -38,6 +38,7 @@ root.
 | --- | --- |
 | `400 Bad Request` | A field is missing, the wrong type, or fails validation. |
 | `401 Unauthorized` | Missing/invalid/expired access token, or wrong credentials. |
+| `403 Forbidden` | Authenticated, but not allowed to edit/delete this record (see §4 "Editing and deleting"). |
 | `409 Conflict` | Duplicate employee ID/email, or the 25-active-user cap is reached. |
 | `429 Too Many Requests` | Per-IP rate limit hit (register: 20/hour, login: 60/min). |
 | `500 Internal Server Error` | Unexpected server error. |
@@ -399,6 +400,147 @@ Errors: `400` (missing/invalid field, bad status value, non-existent task), `401
 
 ---
 
+### Editing and deleting
+
+These five endpoints share one permission model. A `403 Forbidden` means the
+token is valid but the user is not allowed to touch that record:
+
+| Record | Who may edit | Who may delete |
+| --- | --- | --- |
+| task | its creator **or** any of its assignees | its creator only |
+| note | its author only | its author only |
+| comment | its author only | its author only |
+
+---
+
+#### `POST /api/task/update`
+Edit an existing task. Auth: **Bearer**. Bumps `version`, refreshes `updated_at`, and records an `updated` event.
+
+This is a **partial** update: only the keys present in the body change. An
+omitted key leaves the column as-is; an explicit `null` clears a nullable
+column. (`"description": null` erases the description, while omitting
+`description` keeps it.)
+
+| Field | Type | Required | Rules |
+| --- | --- | --- | --- |
+| `task_id` | integer | **yes** | Must be an existing task id, else `400`. |
+| `title` | string | no | 1–200 characters (trimmed). Cannot be set to empty. |
+| `description` | string \| null | no | Up to 4000 chars; `null` or blank clears it. |
+| `status` | string | no | One of the five statuses. |
+| `type` | string | no | One of the `type` enum values (see §3). |
+| `discipline` | string | no | One of the `discipline` enum values (see §3). |
+| `due_at` | string \| null | no | Timestamp string; `null` clears it. |
+| `start_at` | string \| null | no | Timestamp string; `null` clears it. |
+| `assignee_ids` | array of integers \| null | no | **Replaces** the whole assignee set. `[]` or `null` unassigns everyone. Each id must be an existing active user, else `400`. |
+| `project_id` | integer | no | Must be an existing project id, else `400`. Cannot be null — every task belongs to a project. |
+
+At least one field besides `task_id` must be present, else `400`.
+
+Request (rename and reassign, leaving everything else alone):
+```json
+{ "task_id": 12, "title": "Write Q4 report (final)", "assignee_ids": [1, 4] }
+```
+Request (clear the due date):
+```json
+{ "task_id": 12, "due_at": null }
+```
+Success `200 OK`:
+```json
+{ "task": { "...": "task object (with incremented version)" } }
+```
+Errors: `400` (no fields, bad value, non-existent task/assignee/project), `401`, `403` (not the creator or an assignee).
+
+---
+
+#### `POST /api/task/delete`
+Delete a task. Auth: **Bearer**. Also removes its notes, comments (and their nested replies), events, assignee rows and notifications.
+
+**Refuses while the task still has subtasks** — delete those first. This is deliberate: it avoids silently destroying a tree of work.
+
+| Field | Type | Required | Rules |
+| --- | --- | --- | --- |
+| `task_id` | integer | **yes** | Must be an existing task id, else `400`. |
+
+Request:
+```json
+{ "task_id": 12 }
+```
+Success `200 OK`:
+```json
+{ "message": "Task deleted", "deleted_task_id": 12 }
+```
+Errors: `400` (non-existent task, or it still has subtasks — the message says how many), `401`, `403` (not the creator).
+
+---
+
+#### `POST /api/task/note/update`
+Edit a note's body. Auth: **Bearer**. Author only. Refreshes the note's `updated_at`.
+
+| Field | Type | Required | Rules |
+| --- | --- | --- | --- |
+| `note_id` | integer | **yes** | Must be an existing note id, else `400`. |
+| `body` | string | **yes** | 1–4000 characters (trimmed); blank → `400`. |
+
+Request:
+```json
+{ "note_id": 7, "body": "Draft sent for review (v2)" }
+```
+Success `200 OK`:
+```json
+{ "message": "Note updated", "note": { "...": "note object" } }
+```
+Errors: `400`, `401`, `403` (not the author).
+
+---
+
+#### `POST /api/task/note/delete`
+Delete a note. Auth: **Bearer**. Author only.
+
+| Field | Type | Required | Rules |
+| --- | --- | --- | --- |
+| `note_id` | integer | **yes** | Must be an existing note id, else `400`. |
+
+Success `200 OK`:
+```json
+{ "message": "Note deleted", "deleted_note_id": 7 }
+```
+Errors: `400`, `401`, `403` (not the author).
+
+---
+
+#### `POST /api/task/comment/update`
+Edit a comment's body. Auth: **Bearer**. Author only. Refreshes `updated_at`; posts no new notifications.
+
+| Field | Type | Required | Rules |
+| --- | --- | --- | --- |
+| `comment_id` | integer | **yes** | Must be an existing comment id, else `400`. |
+| `body` | string | **yes** | 1–4000 characters (trimmed); blank → `400`. |
+
+Success `200 OK`:
+```json
+{ "message": "Comment updated", "comment": { "...": "comment object" } }
+```
+Errors: `400`, `401`, `403` (not the author).
+
+---
+
+#### `POST /api/task/comment/delete`
+Delete a comment. Auth: **Bearer**. Author only.
+
+**Nested replies cascade** — deleting a comment removes the whole thread beneath it, including replies written by other people. `deleted_reply_count` reports how many went with it.
+
+| Field | Type | Required | Rules |
+| --- | --- | --- | --- |
+| `comment_id` | integer | **yes** | Must be an existing comment id, else `400`. |
+
+Success `200 OK`:
+```json
+{ "message": "Comment deleted", "deleted_comment_id": 5, "deleted_reply_count": 2 }
+```
+Errors: `400`, `401`, `403` (not the author).
+
+---
+
 #### `GET /api/user/all`
 List all active users (for assignee pickers). Auth: **Bearer**.
 
@@ -491,6 +633,12 @@ Errors: `401`.
 | POST | `/api/task/note` | Bearer | `task_id`, `body` |
 | POST | `/api/task/comment` | Bearer | `task_id`, `body`(+ optional `parent_comment_id`) → notifies assignees + parent-comment author |
 | POST | `/api/task/status` | Bearer | `task_id`, `status` |
+| POST | `/api/task/update` | Bearer | `task_id` + any editable field (partial; `null` clears) → creator or assignee |
+| POST | `/api/task/delete` | Bearer | `task_id` → creator only; refuses while subtasks remain |
+| POST | `/api/task/note/update` | Bearer | `note_id`, `body` → author only |
+| POST | `/api/task/note/delete` | Bearer | `note_id` → author only |
+| POST | `/api/task/comment/update` | Bearer | `comment_id`, `body` → author only |
+| POST | `/api/task/comment/delete` | Bearer | `comment_id` → author only; replies cascade |
 | GET | `/api/task/all` | Bearer | — |
 | GET | `/api/task/mine` | Bearer | — |
 | GET | `/api/task/completed` | Bearer | — |
@@ -502,11 +650,18 @@ Errors: `401`.
 
 ## 6. Not yet implemented (planned)
 
-- Update/delete task, assign/reassign, due-date changes.
 - Reading the task event history. `task_events` is **written** by
-  `POST /api/task/subtask` and `POST /api/task/status`, but there is no endpoint
-  to read it. (A task's notes and direct subtasks are now readable via
-  `GET /api/task/detail`.)
-- Optimistic concurrency on status change (no client-supplied expected `version`).
-- Marking notifications read (they are now **written** on `POST /api/task/comment` — to each assignee and, on a reply, the parent comment's author, excluding the comment's own author — and on no other action yet, but there is still no mark-as-read endpoint).
-- Reassigning a task's assignees or moving it between projects after creation (assignees and `project_id` are set at creation only).
+  `POST /api/task/subtask`, `POST /api/task/status` and `POST /api/task/update`,
+  but there is no endpoint to read it. (A task's notes, comments and direct
+  subtasks are readable via `GET /api/task/detail`.)
+- Optimistic concurrency on edit and status change. `version` is returned and
+  incremented, but no endpoint accepts a client-supplied expected `version`, so
+  two concurrent edits silently last-write-wins.
+- Marking notifications read (they are **written** on `POST /api/task/comment` — to each assignee and, on a reply, the parent comment's author, excluding the comment's own author — and on no other action yet, but there is still no mark-as-read endpoint).
+- Notifications on edit/delete. Reassigning a task via `POST /api/task/update`
+  does not notify the new assignees, and deleting a task or comment notifies
+  nobody.
+- Deleting a task that still has subtasks (deliberately refused — see
+  `POST /api/task/delete`). There is no cascade option and no "move subtasks to
+  another parent" endpoint.
+- Editing or deleting a project.

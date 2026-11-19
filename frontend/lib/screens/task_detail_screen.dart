@@ -19,12 +19,19 @@ class TaskDetailScreen extends StatefulWidget {
     required this.taskId,
     required this.usersById,
     this.projectsById = const {},
+    this.onTaskChanged,
   });
 
   final AuthController controller;
   final int taskId;
   final Map<int, AuthUser> usersById;
   final Map<int, Project> projectsById;
+
+  /// Fired with the server's updated task whenever its status is changed or
+  /// it is edited here. Lets the opener (a task list, or a parent task's
+  /// subtask list) refresh that row at the same moment rather than waiting
+  /// for its own refetch after this screen is popped.
+  final ValueChanged<Task>? onTaskChanged;
 
   @override
   State<TaskDetailScreen> createState() => _TaskDetailScreenState();
@@ -118,11 +125,13 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
     );
     if (picked == null || picked == task.status) return;
     try {
-      await widget.controller.changeTaskStatus(
+      final updated = await widget.controller.changeTaskStatus(
         taskId: task.id,
         status: picked,
       );
       if (!mounted) return;
+      // Show the new status straight away, then reconcile.
+      _applyTask(updated);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Status set to ${picked.label}.')),
       );
@@ -144,6 +153,247 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
     if (created == true) _reload();
   }
 
+  Future<void> _editTask(Task task) async {
+    // The dialog hands back the server's updated task so the page can repaint
+    // with the new values before the refetch lands.
+    final updated = await showDialog<Task>(
+      context: context,
+      builder: (context) => _EditTaskDialog(
+        controller: widget.controller,
+        task: task,
+        users: widget.usersById.values.toList(growable: false),
+        projects: widget.projectsById.values.toList(growable: false),
+      ),
+    );
+    if (updated != null && mounted) {
+      _applyTask(updated);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Task updated.')));
+      _reload();
+    }
+  }
+
+  /// Deletes the task and leaves the screen — there is nothing left to show.
+  /// The server refuses while subtasks remain, and that message is surfaced
+  /// verbatim so the user knows what is in the way.
+  Future<void> _deleteTask(Task task) async {
+    final confirmed = await _confirmDestructive(
+      context,
+      title: 'Delete this task?',
+      message: 'This permanently removes "${task.title}" along with its '
+          'notes and comments. This cannot be undone.',
+      confirmLabel: 'Delete task',
+    );
+    if (confirmed != true) return;
+    try {
+      await widget.controller.deleteTask(task.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Task deleted.')));
+      // Hand the id back so whoever opened this screen — a task list, or the
+      // parent task's subtask list — can drop the row straight away instead
+      // of showing it until their own refetch lands.
+      Navigator.of(context).pop(task.id);
+    } catch (error) {
+      if (mounted) _showError(error);
+    }
+  }
+
+  Future<void> _editNote(TaskNote note) async {
+    final body = await _promptForBody(
+      context,
+      title: 'Edit note',
+      label: 'Note',
+      initialValue: note.body,
+    );
+    if (body == null) return;
+    try {
+      await widget.controller.updateNote(noteId: note.id, body: body);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Note updated.')));
+      _reload();
+    } catch (error) {
+      if (mounted) _showError(error);
+    }
+  }
+
+  Future<void> _deleteNote(TaskNote note) async {
+    final confirmed = await _confirmDestructive(
+      context,
+      title: 'Delete this note?',
+      message: 'The note will be permanently removed.',
+      confirmLabel: 'Delete note',
+    );
+    if (confirmed != true) return;
+    try {
+      await widget.controller.deleteNote(note.id);
+      if (!mounted) return;
+      // Drop it from the cached detail first so it vanishes immediately…
+      _removeNote(note.id);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Note deleted.')));
+      // …then reconcile against the server.
+      _reload();
+    } catch (error) {
+      if (mounted) _showError(error);
+    }
+  }
+
+  Future<void> _editComment(TaskComment comment) async {
+    final body = await _promptForBody(
+      context,
+      title: 'Edit comment',
+      label: 'Comment',
+      initialValue: comment.body,
+    );
+    if (body == null) return;
+    try {
+      await widget.controller
+          .updateComment(commentId: comment.id, body: body);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Comment updated.')));
+      _reload();
+    } catch (error) {
+      if (mounted) _showError(error);
+    }
+  }
+
+  /// Deleting a comment cascades its replies server-side, so the confirmation
+  /// says how many would go with it (counted from the loaded thread).
+  Future<void> _deleteComment(TaskComment comment) async {
+    // Capture the subtree before the delete: afterwards these rows are gone
+    // server-side, and we need the ids to clear them from the UI in one go.
+    final doomed = _descendantCommentIds(comment.id);
+    final replies = doomed.length;
+    final confirmed = await _confirmDestructive(
+      context,
+      title: 'Delete this comment?',
+      message: replies == 0
+          ? 'The comment will be permanently removed.'
+          : 'This also deletes $replies '
+              '${replies == 1 ? 'reply' : 'replies'} underneath it. This '
+              'cannot be undone.',
+      confirmLabel: 'Delete comment',
+    );
+    if (confirmed != true) return;
+    try {
+      final deletedReplies = await widget.controller.deleteComment(comment.id);
+      if (!mounted) return;
+      _removeComment(comment.id, doomed);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            deletedReplies == 0
+                ? 'Comment deleted.'
+                : 'Comment and $deletedReplies '
+                    '${deletedReplies == 1 ? 'reply' : 'replies'} deleted.',
+          ),
+        ),
+      );
+      _reload();
+    } catch (error) {
+      if (mounted) _showError(error);
+    }
+  }
+
+  /// Ids of every comment nested anywhere beneath [commentId] in the loaded
+  /// thread. Used to word the delete confirmation and to drop the whole
+  /// subtree from the UI at once, since the server cascades replies.
+  Set<int> _descendantCommentIds(int commentId) {
+    final comments = _lastLoaded?.comments ?? const <TaskComment>[];
+    final found = <int>{};
+    var frontier = <int>{commentId};
+    while (frontier.isNotEmpty) {
+      final next = <int>{};
+      for (final comment in comments) {
+        if (comment.parentCommentId != null &&
+            frontier.contains(comment.parentCommentId) &&
+            found.add(comment.id)) {
+          next.add(comment.id);
+        }
+      }
+      frontier = next;
+    }
+    return found;
+  }
+
+  // --- Optimistic removal ---------------------------------------------------
+  // Mirrors _insertNote / _insertComment: drop the record from the cached
+  // detail the moment the server confirms the delete, so it disappears at
+  // once instead of lingering until the follow-up /task/detail round-trip
+  // lands. The reload that follows reconciles against the server's copy.
+
+  void _removeNote(int noteId) {
+    final current = _lastLoaded;
+    if (current == null) return;
+    setState(() {
+      _lastLoaded = TaskDetail(
+        task: current.task,
+        subtasks: current.subtasks,
+        notes: current.notes
+            .where((note) => note.id != noteId)
+            .toList(growable: false),
+        comments: current.comments,
+      );
+    });
+  }
+
+  /// Removes [commentId] together with [doomed] — the replies the server
+  /// cascaded away with it — so no orphaned subtree is left on screen.
+  void _removeComment(int commentId, Set<int> doomed) {
+    final current = _lastLoaded;
+    if (current == null) return;
+    setState(() {
+      _lastLoaded = TaskDetail(
+        task: current.task,
+        subtasks: current.subtasks,
+        notes: current.notes,
+        comments: current.comments
+            .where((comment) =>
+                comment.id != commentId && !doomed.contains(comment.id))
+            .toList(growable: false),
+      );
+    });
+  }
+
+  /// Swap a freshly-updated task into the cached detail — either this screen's
+  /// own task or one of its subtask rows — so a status change or an edit is
+  /// visible the moment the server confirms it, instead of after the
+  /// follow-up /task/detail round-trip. Also notifies whoever opened this
+  /// screen so their list row updates at the same time.
+  void _applyTask(Task updated) {
+    widget.onTaskChanged?.call(updated);
+    final current = _lastLoaded;
+    if (current == null) return;
+    setState(() {
+      _lastLoaded = TaskDetail(
+        task: current.task.id == updated.id ? updated : current.task,
+        subtasks: current.subtasks
+            .map((subtask) => subtask.id == updated.id ? updated : subtask)
+            .toList(growable: false),
+        notes: current.notes,
+        comments: current.comments,
+      );
+    });
+  }
+
+  void _removeSubtask(int subtaskId) {
+    final current = _lastLoaded;
+    if (current == null) return;
+    setState(() {
+      _lastLoaded = TaskDetail(
+        task: current.task,
+        subtasks: current.subtasks
+            .where((subtask) => subtask.id != subtaskId)
+            .toList(growable: false),
+        notes: current.notes,
+        comments: current.comments,
+      );
+    });
+  }
+
   void _showError(Object error) {
     final message =
         error is AuthApiException ? error.message : 'Something went wrong.';
@@ -153,17 +403,26 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
   void _openSubtask(Task subtask) {
     Navigator.of(context)
         .push(
-          MaterialPageRoute<void>(
+          MaterialPageRoute<int?>(
             builder: (_) => TaskDetailScreen(
               controller: widget.controller,
               taskId: subtask.id,
               usersById: widget.usersById,
               projectsById: widget.projectsById,
+              // Keep this screen's subtask row in step while the child screen
+              // is open, so returning never shows a stale status.
+              onTaskChanged: _applyTask,
             ),
           ),
         )
-        // Returning may have changed this task's children/status.
-        .then((_) => _reload());
+        // Returning may have changed this task's children/status. A non-null
+        // result is the id of a subtask deleted down there, so drop it from
+        // the list immediately rather than waiting for the refetch.
+        .then((deletedId) {
+      if (!mounted) return;
+      if (deletedId != null) _removeSubtask(deletedId);
+      _reload();
+    });
   }
 
   @override
@@ -211,6 +470,12 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
           final canEdit = _myId != null && assignees.contains(_myId);
           final canChangeStatus = _myId != null &&
               (assignees.contains(_myId) || task.createdById == _myId);
+          // Mirrors the backend rule: creator or assignee may edit the task,
+          // creator alone may delete it. Hiding the controls is a convenience
+          // — the server answers 403 either way.
+          final canEditTask = _myId != null &&
+              (assignees.contains(_myId) || task.createdById == _myId);
+          final canDeleteTask = _myId != null && task.createdById == _myId;
           final projectName = task.projectId == null
               ? null
               : widget.projectsById[task.projectId!]?.name;
@@ -240,6 +505,10 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                           projectName: projectName,
                           canChangeStatus: canChangeStatus,
                           onChangeStatus: () => _changeStatus(task),
+                          canEditTask: canEditTask,
+                          canDeleteTask: canDeleteTask,
+                          onEditTask: () => _editTask(task),
+                          onDeleteTask: () => _deleteTask(task),
                         ),
                         const SizedBox(height: 20),
                         _SubtasksSection(
@@ -254,6 +523,9 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                           notes: detail.notes,
                           canAdd: canEdit,
                           authorLabel: _userLabel,
+                          currentUserId: _myId,
+                          onEditNote: _editNote,
+                          onDeleteNote: _deleteNote,
                           onAdd: (body) async {
                             try {
                               final note = await widget.controller
@@ -276,6 +548,8 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                           controller: widget.controller,
                           currentUserId: _myId,
                           authorLabel: _userLabel,
+                          onEditComment: _editComment,
+                          onDeleteComment: _deleteComment,
                           onCommentPosted: (posted) {
                             // Show the new comment in place right away…
                             _insertComment(posted);
@@ -297,6 +571,145 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
   }
 }
 
+/// Yes/no confirmation for an irreversible action. Returns true only when the
+/// user explicitly confirms; dismissing returns null.
+Future<bool?> _confirmDestructive(
+  BuildContext context, {
+  required String title,
+  required String message,
+  required String confirmLabel,
+}) {
+  return showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(title),
+      content: Text(message),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: Theme.of(context).colorScheme.error,
+            foregroundColor: Theme.of(context).colorScheme.onError,
+          ),
+          onPressed: () => Navigator.pop(context, true),
+          child: Text(confirmLabel),
+        ),
+      ],
+    ),
+  );
+}
+
+/// Small single-field editor used for note and comment bodies. Returns the
+/// trimmed text, or null when cancelled or left unchanged.
+Future<String?> _promptForBody(
+  BuildContext context, {
+  required String title,
+  required String label,
+  required String initialValue,
+}) async {
+  final controller = TextEditingController(text: initialValue);
+  try {
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: SizedBox(
+          width: 420,
+          child: TextField(
+            controller: controller,
+            autofocus: true,
+            minLines: 3,
+            maxLines: 8,
+            maxLength: 4000,
+            decoration: InputDecoration(labelText: label),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final text = controller.text.trim();
+              if (text.isEmpty) return;
+              Navigator.pop(context, text);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    // Treat "saved without changing anything" as a no-op so we skip the
+    // round-trip and the version bump.
+    if (result == null || result == initialValue.trim()) return null;
+    return result;
+  } finally {
+    controller.dispose();
+  }
+}
+
+/// Edit/delete overflow menu shown on a task, note or comment the signed-in
+/// user owns. Hidden entirely when they own neither action.
+class _OwnerActions extends StatelessWidget {
+  const _OwnerActions({
+    required this.canEdit,
+    required this.canDelete,
+    required this.onEdit,
+    required this.onDelete,
+    this.tooltip = 'More actions',
+    this.dense = false,
+  });
+
+  final bool canEdit;
+  final bool canDelete;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+  final String tooltip;
+  final bool dense;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!canEdit && !canDelete) return const SizedBox.shrink();
+    final error = Theme.of(context).colorScheme.error;
+    return PopupMenuButton<String>(
+      tooltip: tooltip,
+      padding: EdgeInsets.zero,
+      icon: Icon(Icons.more_vert, size: dense ? 18 : 24),
+      constraints: dense ? const BoxConstraints(minWidth: 140) : null,
+      onSelected: (value) {
+        if (value == 'edit') onEdit();
+        if (value == 'delete') onDelete();
+      },
+      itemBuilder: (context) => [
+        if (canEdit)
+          const PopupMenuItem(
+            value: 'edit',
+            child: ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.edit_outlined, size: 20),
+              title: Text('Edit'),
+            ),
+          ),
+        if (canDelete)
+          PopupMenuItem(
+            value: 'delete',
+            child: ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.delete_outline, size: 20, color: error),
+              title: Text('Delete', style: TextStyle(color: error)),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 class _HeaderCard extends StatelessWidget {
   const _HeaderCard({
     required this.task,
@@ -305,6 +718,10 @@ class _HeaderCard extends StatelessWidget {
     required this.projectName,
     required this.canChangeStatus,
     required this.onChangeStatus,
+    required this.canEditTask,
+    required this.canDeleteTask,
+    required this.onEditTask,
+    required this.onDeleteTask,
   });
 
   final Task task;
@@ -313,6 +730,10 @@ class _HeaderCard extends StatelessWidget {
   final String? projectName;
   final bool canChangeStatus;
   final VoidCallback onChangeStatus;
+  final bool canEditTask;
+  final bool canDeleteTask;
+  final VoidCallback onEditTask;
+  final VoidCallback onDeleteTask;
 
   @override
   Widget build(BuildContext context) {
@@ -323,10 +744,24 @@ class _HeaderCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              task.title,
-              style: theme.textTheme.headlineSmall
-                  ?.copyWith(fontWeight: FontWeight.w700),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Text(
+                    task.title,
+                    style: theme.textTheme.headlineSmall
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                _OwnerActions(
+                  canEdit: canEditTask,
+                  canDelete: canDeleteTask,
+                  onEdit: onEditTask,
+                  onDelete: onDeleteTask,
+                  tooltip: 'Task actions',
+                ),
+              ],
             ),
             const SizedBox(height: 14),
             Wrap(
@@ -567,12 +1002,20 @@ class _NotesSection extends StatefulWidget {
     required this.notes,
     required this.canAdd,
     required this.authorLabel,
+    required this.currentUserId,
+    required this.onEditNote,
+    required this.onDeleteNote,
     required this.onAdd,
   });
 
   final List<TaskNote> notes;
   final bool canAdd;
   final String Function(int?) authorLabel;
+
+  /// Signed-in user; a note is editable/deletable only by its author.
+  final int? currentUserId;
+  final void Function(TaskNote) onEditNote;
+  final void Function(TaskNote) onDeleteNote;
 
   /// Returns true when the note was created (so the field can clear).
   final Future<bool> Function(String body) onAdd;
@@ -594,11 +1037,16 @@ class _NotesSectionState extends State<_NotesSection> {
   Future<void> _send() async {
     final body = _controller.text.trim();
     if (body.isEmpty) return;
+    // Empty the field the instant the user hits send, the way a chat
+    // composer should, rather than after the round-trip — the posted note
+    // already appears optimistically. The text is put back only if the post
+    // fails, so nothing is lost on a 403 or a dropped connection.
+    _controller.clear();
     setState(() => _sending = true);
     final ok = await widget.onAdd(body);
     if (!mounted) return;
     setState(() => _sending = false);
-    if (ok) _controller.clear();
+    if (!ok) _controller.text = body;
   }
 
   @override
@@ -629,6 +1077,10 @@ class _NotesSectionState extends State<_NotesSection> {
                   child: _NoteTile(
                     note: note,
                     authorLabel: widget.authorLabel(note.authorId),
+                    isMine: widget.currentUserId != null &&
+                        note.authorId == widget.currentUserId,
+                    onEdit: () => widget.onEditNote(note),
+                    onDelete: () => widget.onDeleteNote(note),
                   ),
                 ),
             if (widget.canAdd) ...[
@@ -667,10 +1119,19 @@ class _NotesSectionState extends State<_NotesSection> {
 }
 
 class _NoteTile extends StatelessWidget {
-  const _NoteTile({required this.note, required this.authorLabel});
+  const _NoteTile({
+    required this.note,
+    required this.authorLabel,
+    required this.isMine,
+    required this.onEdit,
+    required this.onDelete,
+  });
 
   final TaskNote note;
   final String authorLabel;
+  final bool isMine;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -700,10 +1161,30 @@ class _NoteTile extends StatelessWidget {
                   style: theme.textTheme.bodySmall
                       ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                 ),
+              _OwnerActions(
+                canEdit: isMine,
+                canDelete: isMine,
+                onEdit: onEdit,
+                onDelete: onDelete,
+                tooltip: 'Note actions',
+                dense: true,
+              ),
             ],
           ),
           const SizedBox(height: 6),
           Text(note.body, style: theme.textTheme.bodyMedium),
+          if (note.updatedAt != null &&
+              note.createdAt != null &&
+              note.updatedAt!.isAfter(note.createdAt!)) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Edited ${formatTaskDate(note.updatedAt!)}',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -723,6 +1204,8 @@ class _CommentsSection extends StatefulWidget {
     required this.controller,
     required this.currentUserId,
     required this.authorLabel,
+    required this.onEditComment,
+    required this.onDeleteComment,
     required this.onCommentPosted,
   });
 
@@ -731,6 +1214,10 @@ class _CommentsSection extends StatefulWidget {
   final AuthController controller;
   final int? currentUserId;
   final String Function(int?) authorLabel;
+  /// A comment may be edited or deleted only by its author; deleting one also
+  /// cascades its replies server-side.
+  final void Function(TaskComment) onEditComment;
+  final void Function(TaskComment) onDeleteComment;
   /// Called with the comment the server just created so the parent can
   /// insert it optimistically and then reload.
   final ValueChanged<TaskComment> onCommentPosted;
@@ -781,25 +1268,34 @@ class _CommentsSectionState extends State<_CommentsSection> {
   Future<void> _sendTopLevel() async {
     final body = _topLevelController.text.trim();
     if (body.isEmpty) return;
+    // Clear up front — see the note in _NotesSectionState._send.
+    _topLevelController.clear();
     setState(() => _sendingTopLevel = true);
     final ok = await _post(body: body);
     if (!mounted) return;
     setState(() => _sendingTopLevel = false);
-    if (ok) _topLevelController.clear();
+    if (!ok) _topLevelController.text = body;
   }
 
   Future<void> _sendReply() async {
     final target = _replyingTo;
     final body = _replyController.text.trim();
     if (target == null || body.isEmpty) return;
-    setState(() => _sendingReply = true);
+    // Close the inline reply composer and empty it immediately; the reply
+    // itself shows up optimistically in the thread. On failure we re-arm it
+    // with the original text so the user can retry without retyping.
+    _replyController.clear();
+    setState(() {
+      _sendingReply = true;
+      _replyingTo = null;
+    });
     final ok = await _post(body: body, parentCommentId: target);
     if (!mounted) return;
     setState(() {
       _sendingReply = false;
-      if (ok) {
-        _replyController.clear();
-        _replyingTo = null;
+      if (!ok) {
+        _replyingTo = target;
+        _replyController.text = body;
       }
     });
   }
@@ -848,6 +1344,9 @@ class _CommentsSectionState extends State<_CommentsSection> {
                   childrenByParent: childrenByParent,
                   depth: 0,
                   authorLabel: widget.authorLabel,
+                  currentUserId: widget.currentUserId,
+                  onEditComment: widget.onEditComment,
+                  onDeleteComment: widget.onDeleteComment,
                   replyingTo: _replyingTo,
                   onReplyPressed: (id) => setState(() {
                     _replyingTo = id;
@@ -908,6 +1407,9 @@ class _CommentNode extends StatelessWidget {
     required this.childrenByParent,
     required this.depth,
     required this.authorLabel,
+    required this.currentUserId,
+    required this.onEditComment,
+    required this.onDeleteComment,
     required this.replyingTo,
     required this.onReplyPressed,
     required this.onCancelReply,
@@ -920,6 +1422,9 @@ class _CommentNode extends StatelessWidget {
   final Map<int?, List<TaskComment>> childrenByParent;
   final int depth;
   final String Function(int?) authorLabel;
+  final int? currentUserId;
+  final void Function(TaskComment) onEditComment;
+  final void Function(TaskComment) onDeleteComment;
   final int? replyingTo;
   final ValueChanged<int> onReplyPressed;
   final VoidCallback onCancelReply;
@@ -932,6 +1437,8 @@ class _CommentNode extends StatelessWidget {
     final theme = Theme.of(context);
     final children = childrenByParent[comment.id] ?? const <TaskComment>[];
     final isReplyTarget = replyingTo == comment.id;
+    final isMine =
+        currentUserId != null && comment.authorId == currentUserId;
     // Cap the visual indent so deeply nested chains stay readable on narrow
     // viewports; nesting still reads via the guide line and spacing even
     // when the pixel offset stops growing.
@@ -980,11 +1487,32 @@ class _CommentNode extends StatelessWidget {
                                   color: theme.colorScheme.onSurfaceVariant,
                                 ),
                               ),
+                            _OwnerActions(
+                              canEdit: isMine,
+                              canDelete: isMine,
+                              onEdit: () => onEditComment(comment),
+                              onDelete: () => onDeleteComment(comment),
+                              tooltip: 'Comment actions',
+                              dense: true,
+                            ),
                           ],
                         ),
                         const SizedBox(height: 6),
                         Text(comment.body,
                             style: theme.textTheme.bodyMedium),
+                        if (comment.updatedAt != null &&
+                            comment.createdAt != null &&
+                            comment.updatedAt!
+                                .isAfter(comment.createdAt!)) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            'Edited ${formatTaskDate(comment.updatedAt!)}',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ],
                         const SizedBox(height: 4),
                         Align(
                           alignment: Alignment.centerLeft,
@@ -1058,6 +1586,9 @@ class _CommentNode extends StatelessWidget {
               childrenByParent: childrenByParent,
               depth: depth + 1,
               authorLabel: authorLabel,
+              currentUserId: currentUserId,
+              onEditComment: onEditComment,
+              onDeleteComment: onDeleteComment,
               replyingTo: replyingTo,
               onReplyPressed: onReplyPressed,
               onCancelReply: onCancelReply,
@@ -1099,6 +1630,331 @@ class _CenteredCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Edit an existing task. Pre-filled from [task]; the form submits every
+/// field it manages, and emptying an optional one sends an explicit null so
+/// the server clears it. Shown to the task's creator and to its assignees —
+/// the backend re-checks that on every call.
+class _EditTaskDialog extends StatefulWidget {
+  const _EditTaskDialog({
+    required this.controller,
+    required this.task,
+    required this.users,
+    required this.projects,
+  });
+
+  final AuthController controller;
+  final Task task;
+  final List<AuthUser> users;
+  final List<Project> projects;
+
+  @override
+  State<_EditTaskDialog> createState() => _EditTaskDialogState();
+}
+
+class _EditTaskDialogState extends State<_EditTaskDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _titleController;
+  late final TextEditingController _descriptionController;
+  late TaskStatus _status;
+  late TaskType _type;
+  late TaskDiscipline _discipline;
+  late Set<int> _assigneeIds;
+  late int? _projectId;
+  DateTime? _startDate;
+  DateTime? _dueDate;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final task = widget.task;
+    _titleController = TextEditingController(text: task.title);
+    _descriptionController =
+        TextEditingController(text: task.description ?? '');
+    _status = task.status;
+    _type = task.type;
+    _discipline = task.discipline;
+    _assigneeIds = {...task.assigneeIds};
+    // Only offer a project the picker actually knows about, so an unknown id
+    // doesn't crash the dropdown's value lookup.
+    _projectId = widget.projects.any((p) => p.id == task.projectId)
+        ? task.projectId
+        : null;
+    _startDate = task.startAt;
+    _dueDate = task.dueAt;
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _descriptionController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _chooseStartDate() async {
+    final today = DateTime.now();
+    final initial = _startDate ?? today;
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      // Wide bounds: an existing task may already carry a past date, and the
+      // picker throws if initialDate falls outside the range.
+      firstDate: DateTime(today.year - 5),
+      lastDate: DateTime(today.year + 10),
+    );
+    if (picked != null) setState(() => _startDate = picked);
+  }
+
+  Future<void> _chooseDueDate() async {
+    final today = DateTime.now();
+    final initial = _dueDate ?? _startDate ?? today;
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(today.year - 5),
+      lastDate: DateTime(today.year + 10),
+    );
+    if (picked != null) setState(() => _dueDate = picked);
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final description = _descriptionController.text.trim();
+    try {
+      final updated = await widget.controller.updateTask(
+        taskId: widget.task.id,
+        title: _titleController.text.trim(),
+        description: description.isEmpty ? null : description,
+        clearDescription: description.isEmpty,
+        status: _status,
+        type: _type,
+        discipline: _discipline,
+        startAt: _startDate,
+        clearStartAt: _startDate == null,
+        dueAt: _dueDate,
+        clearDueAt: _dueDate == null,
+        assigneeIds: _assigneeIds.toList(growable: false),
+        projectId: _projectId,
+      );
+      if (mounted) Navigator.pop(context, updated);
+    } on AuthApiException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _error =
+            'Could not reach the server. Check the connection and try again.');
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AlertDialog(
+      title: const Text('Edit task'),
+      content: SizedBox(
+        width: 460,
+        child: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TextFormField(
+                  controller: _titleController,
+                  autofocus: true,
+                  decoration: const InputDecoration(labelText: 'Title'),
+                  validator: (value) {
+                    final text = value?.trim() ?? '';
+                    if (text.isEmpty) return 'Enter a title';
+                    if (text.length > 200) {
+                      return 'Title must be 200 characters or fewer';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _descriptionController,
+                  minLines: 2,
+                  maxLines: 4,
+                  maxLength: 4000,
+                  decoration: const InputDecoration(
+                    labelText: 'Description (optional)',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<TaskStatus>(
+                  initialValue: _status,
+                  decoration: const InputDecoration(labelText: 'Status'),
+                  items: [
+                    for (final status in TaskStatus.values)
+                      DropdownMenuItem(
+                        value: status,
+                        child: Text(status.label),
+                      ),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) setState(() => _status = value);
+                  },
+                ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<TaskType>(
+                  initialValue: _type,
+                  decoration: const InputDecoration(labelText: 'Type'),
+                  items: [
+                    for (final type in TaskType.values)
+                      DropdownMenuItem(value: type, child: Text(type.label)),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) setState(() => _type = value);
+                  },
+                ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<TaskDiscipline>(
+                  initialValue: _discipline,
+                  decoration: const InputDecoration(labelText: 'Discipline'),
+                  items: [
+                    for (final discipline in TaskDiscipline.values)
+                      DropdownMenuItem(
+                        value: discipline,
+                        child: Text(discipline.label),
+                      ),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) setState(() => _discipline = value);
+                  },
+                ),
+                if (widget.projects.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<int?>(
+                    initialValue: _projectId,
+                    decoration: const InputDecoration(labelText: 'Project'),
+                    items: [
+                      for (final project in widget.projects)
+                        DropdownMenuItem<int?>(
+                          value: project.id,
+                          child: Text(project.name),
+                        ),
+                    ],
+                    onChanged: (value) => setState(() => _projectId = value),
+                  ),
+                ],
+                const SizedBox(height: 20),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Assigned to',
+                    style: theme.textTheme.labelLarge
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                if (widget.users.isEmpty)
+                  Text(
+                    'No teammates available.',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                  )
+                else
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final user in widget.users)
+                        FilterChip(
+                          label: Text(user.displayName),
+                          selected: _assigneeIds.contains(user.id),
+                          onSelected: (selected) => setState(() {
+                            if (selected) {
+                              _assigneeIds.add(user.id);
+                            } else {
+                              _assigneeIds.remove(user.id);
+                            }
+                          }),
+                        ),
+                    ],
+                  ),
+                if (_assigneeIds.isEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'Saving with nobody selected leaves this task unassigned.',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                  ),
+                ],
+                const SizedBox(height: 20),
+                OutlinedButton.icon(
+                  onPressed: _chooseStartDate,
+                  icon: const Icon(Icons.play_circle_outline),
+                  label: Text(
+                    _startDate == null
+                        ? 'Start date (optional)'
+                        : 'Starts ${formatTaskDate(_startDate!)}',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: _chooseDueDate,
+                  icon: const Icon(Icons.event_outlined),
+                  label: Text(
+                    _dueDate == null
+                        ? 'Due date (optional)'
+                        : 'Due ${formatTaskDate(_dueDate!)}',
+                  ),
+                ),
+                if (_startDate != null || _dueDate != null)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      onPressed: () => setState(() {
+                        _startDate = null;
+                        _dueDate = null;
+                      }),
+                      child: const Text('Clear dates'),
+                    ),
+                  ),
+                if (_error != null) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    _error!,
+                    style: TextStyle(color: theme.colorScheme.error),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          // Pops null — the caller treats that as "nothing changed".
+          onPressed: _busy ? null : () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _busy ? null : _submit,
+          child: _busy
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Save changes'),
+        ),
+      ],
     );
   }
 }

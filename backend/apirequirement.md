@@ -1,5 +1,13 @@
 # Task Manager — API Requirements (Frontend Integration)
 
+> **⚠️ SUPERSEDED — do not use this file.**
+> The authoritative API contract is [`../apirequirement.md`](../apirequirement.md)
+> at the repository root. This copy is stale: it still describes an
+> HttpOnly-cookie refresh model that was reverted (auth now returns the refresh
+> token in the JSON body), and it predates projects, threaded comments,
+> multi-assignee tasks, and the edit/delete endpoints.
+> Delete this file once nothing links to it.
+
 This document lists every HTTP endpoint the backend exposes, the request data each
 needs, and the exact JSON each returns. It is the contract the Flutter frontend
 integrates against.

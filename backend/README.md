@@ -26,7 +26,6 @@ Set these environment variables before starting the backend:
 | `TASK_MANAGER_TLS_CERT` | yes | PEM certificate for the HTTPS listener |
 | `TASK_MANAGER_TLS_KEY` | yes | Matching private key; protect its file permissions |
 | `TASK_MANAGER_CORS_ORIGIN` | no | Exact browser origin allowed to call the auth API, e.g. `http://localhost:5000`; do not include a path or trailing slash |
-| `TASK_MANAGER_REFRESH_COOKIE_SAMESITE` | no | `SameSite` attribute on the refresh cookie. One of `Strict`, `Lax`, `None`; defaults to `Strict`. Use `None` when the frontend and backend are on different schemes (e.g. dev `http://localhost:5000` → `https://localhost:5555`), because Chrome's schemeful same-site treats them as cross-site and would silently drop the cookie |
 | `TASK_MANAGER_LISTEN_ADDRESS` | no | Listener address; defaults to `0.0.0.0` |
 | `TASK_MANAGER_PORT` | no | HTTPS port; defaults to `5555` |
 
@@ -88,10 +87,29 @@ All routes use JSON except authenticated requests, which use the
 | Method and path | Request fields | Result |
 | --- | --- | --- |
 | `POST /api/auth/register` | `employee_id`, `email`, `display_name`, `password` | Creates an active account immediately; sign in with its employee ID or email and password |
-| `POST /api/auth/login` | `login` (employee ID or email), `password` | Returns the access token in the JSON body and sets the refresh token as an HttpOnly cookie |
-| `POST /api/auth/refresh` | _(no body; the `refresh_token` HttpOnly cookie is the credential)_ | Rotates the refresh cookie and issues a new access token |
-| `POST /api/auth/logout` | Bearer access token | Revokes its refresh session, clears the refresh cookie; any issued access token expires within 10 minutes |
+| `POST /api/auth/login` | `login` (employee ID or email), `password` | Returns access and refresh tokens in the JSON body |
+| `POST /api/auth/refresh` | `refresh_token` | Rotates the refresh token and issues a new access token |
+| `POST /api/auth/logout` | Bearer access token | Revokes its refresh session; any issued access token expires within 10 minutes |
 | `GET /api/auth/me` | Bearer access token | Returns the authenticated user's profile |
+
+Task-domain routes are all Bearer-protected. The full request/response contract
+lives in [apirequirement.md](../apirequirement.md); the edit/delete group is
+summarised here because it is the only part with a per-record permission rule:
+
+| Method and path | Request fields | Who may call it |
+| --- | --- | --- |
+| `POST /api/task/update` | `task_id` plus any editable field (partial; an explicit `null` clears a nullable column) | The task's creator or any of its assignees |
+| `POST /api/task/delete` | `task_id` | The task's creator only; refused with `400` while the task still has subtasks |
+| `POST /api/task/note/update` | `note_id`, `body` | The note's author only |
+| `POST /api/task/note/delete` | `note_id` | The note's author only |
+| `POST /api/task/comment/update` | `comment_id`, `body` | The comment's author only |
+| `POST /api/task/comment/delete` | `comment_id` | The comment's author only; nested replies cascade |
+
+A caller with a valid token who fails one of these rules gets `403 Forbidden`
+(`ForbiddenError` in `services/AuthService.h`, mapped in `ErrorMiddleware`).
+Deleting a task also clears its notes, events and notifications by hand,
+because those tables reference `tasks` with `ON DELETE RESTRICT` (migration
+001); assignees and comments cascade on their own (migration 006).
 
 Passwords currently enforce the requested six-character minimum, uppercase,
 number, and special-character requirements. A longer minimum (at least 12
@@ -105,18 +123,15 @@ multiple backend instances; run one backend process with this SQLite database.
 Registration no longer requires email verification. Existing accounts awaiting
 verification are activated by migration `003_disable_email_verification.sql`.
 
-Refresh tokens are issued **only** as an `HttpOnly; Secure; SameSite=Strict;
-Path=/api/auth` cookie named `refresh_token`. They are not in the JSON body
-and JavaScript cannot read them. `POST /api/auth/login` and
-`POST /api/auth/refresh` set a fresh cookie (the server rotates the token on
-every call and overwrites the cookie with the replacement);
-`POST /api/auth/logout` clears it. Browser clients must opt into sending
-cookies (`credentials: 'include'` on `fetch`, `withCredentials = true` on XHR,
-`BrowserClient()..withCredentials = true` on Flutter Web); native clients
-must send and persist the cookie themselves. Keep access tokens in memory
-only and never put bearer tokens in URLs or application logs.
+Refresh tokens are returned in the JSON body of `POST /api/auth/login` and
+`POST /api/auth/refresh`, and the client sends one back in the
+`POST /api/auth/refresh` body. The token rotates on every refresh, so the
+client must replace the one it holds with the new one. No cookies are used.
+The Flutter Web client persists its refresh token in `localStorage` so a
+reload can resurrect the session — a deliberate tradeoff that keeps the app
+working over plain HTTP on a LAN box, at the cost of exposing the token to
+XSS. Keep access tokens in memory only and never put bearer tokens in URLs or
+application logs.
 
-Because cookies are credentials, CORS responses include
-`Access-Control-Allow-Credentials: true` and the allowlisted origin must be
-exact — wildcard origins are refused by the browser when credentials are in
-play. Set `TASK_MANAGER_CORS_ORIGIN` to the single frontend origin.
+CORS uses an exact-origin allowlist, not a wildcard: set
+`TASK_MANAGER_CORS_ORIGIN` to the single frontend origin.
