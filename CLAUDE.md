@@ -67,4 +67,4 @@ Request flow: **route → `ErrorMiddleware` → controller → `AuthService` →
 
 - Entry [frontend/lib/main.dart](frontend/lib/main.dart) wires `AuthController(AuthApi())` and swaps between `AuthScreen` and `ProfileScreen` based on `controller.isAuthenticated` via `AnimatedBuilder` (the controller is a `ChangeNotifier`).
 - [frontend/lib/auth/auth_api.dart](frontend/lib/auth/auth_api.dart) is the only networking layer; base URL comes from the `API_BASE_URL` dart-define. JSON field names are snake_case to match the backend.
-- Tokens are held **in memory only** (cleared on reload/sign-out) — do not add browser-storage persistence of bearer tokens for this demo.
+- Token storage uses the **localStorage refresh-token model**: the access token stays in memory (short-lived, 10 min), but the **refresh token is persisted in `localStorage`** so a reload can resurrect the session. This was a deliberate switch away from the earlier HttpOnly-cookie model so the app works over plain HTTP on a LAN/demo box — at the cost of XSS exposure of the refresh token. See the security note in [apirequirement.md](apirequirement.md) §2. For production, prefer the cookie model over HTTPS.

@@ -22,11 +22,11 @@ root.
 
 ## 2. Conventions
 
-- **Content type:** all request and response bodies are JSON (`Content-Type: application/json`), except `POST /api/auth/logout` and `POST /api/auth/refresh` (no body) and `204` responses (empty).
+- **Content type:** all request and response bodies are JSON (`Content-Type: application/json`), except `POST /api/auth/logout` (no body) and `204` responses (empty).
 - **Field naming:** `snake_case` everywhere.
 - **Auth:** protected endpoints require the header `Authorization: Bearer <access_token>`.
 - **Access token lifetime:** 10 minutes (`expires_in` = `600`). Use `POST /api/auth/refresh` to get a new one; the refresh token rotates on every call.
-- **Refresh token storage:** the refresh token is delivered **only** in an `HttpOnly; Secure; SameSite=Strict; Path=/api/auth` cookie named `refresh_token`. It is never in the JSON body and JavaScript cannot read it. The browser must send cookies on `/api/auth/*` requests (`credentials: 'include'` on `fetch`, or `withCredentials = true` on XHR / Flutter Web `BrowserClient`). `POST /api/auth/login` and `POST /api/auth/refresh` both return a fresh `Set-Cookie: refresh_token=...` header; `POST /api/auth/logout` clears it.
+- **Refresh token storage:** the refresh token is returned in the JSON body of `POST /api/auth/login` and `POST /api/auth/refresh` (field `refresh_token`). The client stores it (localStorage) and sends it in the `POST /api/auth/refresh` request body. No cookies are used. **SECURITY NOTE:** a refresh token in localStorage is readable by JavaScript and therefore exposed to XSS; this model is a deliberate tradeoff so the app works over plain HTTP on a LAN/demo deployment. For production, prefer the HttpOnly-cookie model served over HTTPS.
 - **Access token storage (client):** keep the access token in memory only (cleared on reload). Do not put it in URLs or logs.
 - **CORS with credentials:** cross-origin responses to the exact allowed origin include `Access-Control-Allow-Credentials: true`. Preflight for `/api/auth/*` includes the same. Wildcard origins are **not** allowed when credentials are in play.
 - **Error shape:** every non-2xx response is `{ "error": "<human-readable message>" }`.
@@ -134,14 +134,15 @@ Project `id` `1` is the built-in **"Unidentified"** project; its `created_by_id`
 ```json
 {
   "access_token": "<jwt>",
+  "refresh_token": "<opaque>",
   "token_type": "Bearer",
   "expires_in": 600,
   "user": { "...": "user object" }
 }
 ```
-The refresh token is **not** in this body. It is set as an `HttpOnly; Secure;
-SameSite=Strict; Path=/api/auth; Max-Age=2592000` cookie named `refresh_token`
-via a `Set-Cookie` header on the same response.
+The `refresh_token` is an opaque string (30-day lifetime) that rotates on every
+refresh. The client persists it (localStorage) and must replace its stored copy
+with the new one returned by each refresh. See the security note in §2.
 
 ---
 
@@ -189,19 +190,25 @@ Errors: `401` (invalid credentials), `400`, `429`.
 ---
 
 #### `POST /api/auth/refresh`
-Rotate the refresh token and get a new access token. Auth: **cookie** — the browser must send the `refresh_token` HttpOnly cookie that was set by `POST /api/auth/login` (or by a previous refresh). The cookie is the only credential; **there is no request body**.
+Rotate the refresh token and get a new access token. Auth: **the refresh token in the request body** (no cookie, no Bearer header).
 
-Request: *(no body; the cookie is sent automatically with `credentials: 'include'`)*
+| Field | Type | Required | Rules |
+| --- | --- | --- | --- |
+| `refresh_token` | string | yes | The stored refresh token from the last login/refresh. |
 
-Success `200 OK`: a **tokens** object. The response also carries a **new** `Set-Cookie: refresh_token=...` header — the previous refresh token is now invalid and the browser has already been given its replacement, so no client code needs to touch it.
-Errors: `401` (missing/invalid/expired/already-rotated refresh cookie), `400`.
+Request:
+```json
+{ "refresh_token": "<opaque>" }
+```
+Success `200 OK`: a **tokens** object (see §3) carrying a **new** `refresh_token` — the one just sent is now invalid, so the client must persist the new one in its place.
+Errors: `401` (missing/invalid/expired/already-rotated refresh token), `400`.
 
 ---
 
 #### `POST /api/auth/logout`
 Revoke the current session. Auth: **Bearer**. **No request body.**
 
-Success `204 No Content` (empty body). The response clears the `refresh_token` cookie (`Set-Cookie: refresh_token=; Max-Age=0; Path=/api/auth`).
+Success `204 No Content` (empty body). The client discards its stored refresh token.
 Errors: `401`.
 
 ---
@@ -475,9 +482,9 @@ Errors: `401`.
 | Method | Path | Auth | Body |
 | --- | --- | --- | --- |
 | POST | `/api/auth/register` | — | `employee_id`, `email`, `display_name`, `password` |
-| POST | `/api/auth/login` | — | `login`, `password` → sets `refresh_token` HttpOnly cookie |
-| POST | `/api/auth/refresh` | `refresh_token` cookie | _(none)_ → rotates the cookie |
-| POST | `/api/auth/logout` | Bearer | _(none)_ → clears the cookie |
+| POST | `/api/auth/login` | — | `login`, `password` → returns `refresh_token` in body |
+| POST | `/api/auth/refresh` | — | `refresh_token` → rotates it, returns the new one in body |
+| POST | `/api/auth/logout` | Bearer | _(none)_ → client discards its stored refresh token |
 | GET | `/api/auth/me` | Bearer | — |
 | POST | `/api/task/add` | Bearer | `title`(+ optional `description`, `status`, `due_at`, `assignee_ids`, `parent_task_id`, `project_id`) |
 | POST | `/api/task/subtask` | Bearer | `parent_task_id`, `title`(+ optional `description`, `status`, `due_at`, `assignee_ids`, `project_id`) |

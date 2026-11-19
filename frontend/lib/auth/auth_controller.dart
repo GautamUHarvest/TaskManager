@@ -38,20 +38,19 @@ class AuthController extends ChangeNotifier {
   /// out. Used to label "assigned to you" and to default the assignee picker.
   AuthUser? get currentUser => _tokens?.user;
 
-  /// Tries to resurrect a prior session on app boot. The refresh token lives
-  /// in an HttpOnly cookie we cannot read — we just ask the server to rotate
-  /// it; if the cookie is still valid we get a new access token (and a fresh
-  /// cookie) back, and if it isn't the server answers 401 and we fall through
-  /// to the sign-in screen. A locally cached user (if any) lets the shell
-  /// paint immediately instead of flashing the login page during the refresh
-  /// round-trip.
+  /// Tries to resurrect a prior session on app boot. The refresh token is read
+  /// from localStorage and exchanged for a new access token; the server rotates
+  /// it and we persist the fresh one. If the stored token is dead the server
+  /// answers 401 and we fall through to the sign-in screen. The cached user
+  /// lets the shell paint immediately instead of flashing the login page during
+  /// the refresh round-trip.
   Future<void> restore() async {
     final cached = _storage.read();
     if (cached == null) return;
     _restoring = true;
     notifyListeners();
     try {
-      _setTokens(await api.refresh());
+      _setTokens(await api.refresh(cached.refreshToken));
     } on AuthApiException {
       _storage.clear();
     } finally {
@@ -235,14 +234,13 @@ class AuthController extends ChangeNotifier {
   }
 
   Future<void> _refresh() async {
-    _requireTokens();
+    final refreshToken = _requireTokens().refreshToken;
     try {
-      _setTokens(await api.refresh());
+      _setTokens(await api.refresh(refreshToken));
     } on AuthApiException catch (error) {
-      // A 401 here means the HttpOnly refresh cookie is dead (expired or
-      // already rotated by another tab). Wipe memory state so the UI falls
-      // back to the sign-in screen cleanly instead of looping on a bad
-      // credential. The server has already cleared / refused the cookie.
+      // A 401 here means the stored refresh token is dead (expired or already
+      // rotated by another tab). Wipe memory + storage so the UI falls back to
+      // the sign-in screen cleanly instead of looping on a bad credential.
       if (error.statusCode == 401) {
         _clearTokens();
       }
@@ -261,11 +259,10 @@ class AuthController extends ChangeNotifier {
   void _setTokens(AuthTokens tokens) {
     _tokens = tokens;
     _accessExpiresAt = DateTime.now().add(Duration(seconds: tokens.expiresIn));
-    // Cache the user so the next page load can paint the signed-in shell
-    // immediately while [restore] calls /auth/refresh in the background. The
-    // refresh token itself lives in an HttpOnly cookie we cannot touch, and
-    // the access token is short-lived — neither is persisted here.
-    _storage.write(user: tokens.user);
+    // Persist the user (so the next load paints the shell immediately) and the
+    // rotated refresh token (so [restore] can exchange it for a new access
+    // token). The access token is short-lived and stays in memory only.
+    _storage.write(user: tokens.user, refreshToken: tokens.refreshToken);
     notifyListeners();
   }
 

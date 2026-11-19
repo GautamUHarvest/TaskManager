@@ -2,6 +2,13 @@ cmake_minimum_required(VERSION 3.5)
 project(TaskManagerBackend CXX)
 enable_testing()
 
+# Emit build/compile_commands.json so editors/IntelliSense (VS Code C/C++,
+# clangd) use the exact include paths and flags as the real build. Without
+# this, IntelliSense misses non-standard include dirs (e.g. jsoncpp under
+# /usr/include/jsoncpp) and reports phantom "undefined type" errors even
+# though the compiler build is clean.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Custom file extension configuration
 if(NOT DEFINED DEFAULT_SOURCE_EXTENSION)
     set(DEFAULT_SOURCE_EXTENSION "cc" CACHE STRING "Default source file extension (e.g., cc, cpp, cxx)")

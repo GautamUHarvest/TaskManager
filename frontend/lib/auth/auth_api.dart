@@ -24,25 +24,28 @@ class AuthUser {
   final String displayName;
 }
 
-/// Login/refresh response payload. The refresh token is **not** here — the
-/// backend delivers it only as an HttpOnly cookie scoped to `/api/auth`, so
-/// JavaScript (and this class) cannot see it. The browser sends it back
-/// automatically on `/api/auth/refresh` and `/api/auth/logout` requests made
-/// through an [ApiClient] that has `withCredentials` enabled.
+/// Login/refresh response payload. The refresh token **is** here — it is
+/// returned in the JSON body, persisted to localStorage, and sent back in the
+/// `/auth/refresh` request body. SECURITY NOTE: storing the refresh token in
+/// localStorage makes it readable by JavaScript (XSS-exposed); this is a
+/// deliberate tradeoff so the app works over plain HTTP on a LAN/demo box.
 class AuthTokens {
   const AuthTokens({
     required this.accessToken,
+    required this.refreshToken,
     required this.expiresIn,
     required this.user,
   });
 
   factory AuthTokens.fromJson(Map<String, dynamic> json) => AuthTokens(
         accessToken: json['access_token'] as String,
+        refreshToken: json['refresh_token'] as String,
         expiresIn: json['expires_in'] as int,
         user: AuthUser.fromJson(json['user'] as Map<String, dynamic>),
       );
 
   final String accessToken;
+  final String refreshToken;
   final int expiresIn;
   final AuthUser user;
 }
@@ -74,12 +77,13 @@ class AuthApi {
     return AuthTokens.fromJson(json);
   }
 
-  /// Rotates the refresh cookie and returns a new access token. The old
-  /// refresh token travels up in the HttpOnly cookie (sent automatically by
-  /// the browser), and the response's `Set-Cookie` header replaces it with a
-  /// fresh one — no client-side token handling needed.
-  Future<AuthTokens> refresh() async {
-    final json = await _client.post('/auth/refresh', const {});
+  /// Exchanges the stored [refreshToken] for a new access token. The refresh
+  /// token rotates on every call, so the caller must persist the new one from
+  /// the returned [AuthTokens] in place of the one it sent.
+  Future<AuthTokens> refresh(String refreshToken) async {
+    final json = await _client.post('/auth/refresh', {
+      'refresh_token': refreshToken,
+    });
     return AuthTokens.fromJson(json);
   }
 

@@ -8,25 +8,29 @@ import 'dart:html' as html;
 
 import 'auth_api.dart';
 
-/// Cached-user payload. The refresh token is NOT here — it lives in an
-/// HttpOnly cookie the browser handles automatically. This cache exists only
-/// so the signed-in shell can paint immediately on reload while
-/// [AuthController.restore] calls `/auth/refresh` in the background. If the
-/// cookie turns out to be dead, the cache is wiped and the user signs in
+/// Persisted session payload: the signed-in user plus the refresh token.
+/// SECURITY NOTE: the refresh token is stored in localStorage (readable by
+/// JavaScript, XSS-exposed) — a deliberate tradeoff so the app works over plain
+/// HTTP. [AuthController.restore] uses the token to get a fresh access token on
+/// reload; if the server rejects it, the payload is wiped and the user signs in
 /// again.
 class PersistedSession {
-  const PersistedSession({required this.user});
+  const PersistedSession({required this.user, required this.refreshToken});
 
   final AuthUser user;
+  final String refreshToken;
 }
 
-/// LocalStorage-backed cache of the last signed-in user. Holds no secrets —
-/// the refresh token is a server-set HttpOnly cookie that JavaScript cannot
-/// read or write.
+/// LocalStorage-backed store for the signed-in user and their refresh token.
+/// The refresh token is a secret held in plaintext here (see [PersistedSession]
+/// security note); it is only acceptable for a LAN/demo deployment.
 class TokenStorage {
   TokenStorage({String storageKey = _defaultKey}) : _key = storageKey;
 
-  static const String _defaultKey = 'task_manager.session.v1';
+  // v2: payload now carries the refresh token. A v1 entry (user only) is
+  // silently ignored by read() — it lacks a refresh token — so old sessions
+  // fall through to the sign-in screen.
+  static const String _defaultKey = 'task_manager.session.v2';
 
   final String _key;
 
@@ -37,8 +41,16 @@ class TokenStorage {
       final decoded = jsonDecode(raw);
       if (decoded is! Map<String, dynamic>) return null;
       final userJson = decoded['user'];
-      if (userJson is! Map<String, dynamic>) return null;
-      return PersistedSession(user: AuthUser.fromJson(userJson));
+      final refreshToken = decoded['refresh_token'];
+      if (userJson is! Map<String, dynamic> ||
+          refreshToken is! String ||
+          refreshToken.isEmpty) {
+        return null;
+      }
+      return PersistedSession(
+        user: AuthUser.fromJson(userJson),
+        refreshToken: refreshToken,
+      );
     } catch (_) {
       // Corrupt payload — treat as absent so the user signs in again.
       clear();
@@ -46,7 +58,7 @@ class TokenStorage {
     }
   }
 
-  void write({required AuthUser user}) {
+  void write({required AuthUser user, required String refreshToken}) {
     html.window.localStorage[_key] = jsonEncode({
       'user': {
         'id': user.id,
@@ -54,6 +66,7 @@ class TokenStorage {
         'email': user.email,
         'display_name': user.displayName,
       },
+      'refresh_token': refreshToken,
     });
   }
 

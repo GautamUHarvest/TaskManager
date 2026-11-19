@@ -53,14 +53,12 @@ Map<String, dynamic> decodeApiResponse(http.Response response) {
 /// Thin HTTP layer shared by [AuthApi] and the data APIs. Handles the base
 /// URL, JSON encoding, optional Bearer auth, and error decoding in one place.
 ///
-/// Default client is a [BrowserClient] with `withCredentials = true` so the
-/// browser sends and accepts the HttpOnly `refresh_token` cookie on
-/// `/api/auth/*` requests. Without this, cross-origin dev
-/// (`http://localhost:5000` → `https://localhost:5555`) would silently drop
-/// the cookie and refresh would fail with 401.
+/// Auth uses the localStorage token model: the access token rides in the
+/// `Authorization: Bearer` header and the refresh token is sent in the
+/// `/auth/refresh` request body — no cookies — so `withCredentials` is off.
 class ApiClient {
   ApiClient({http.Client? client, String? baseUrl})
-      : _client = client ?? (BrowserClient()..withCredentials = true),
+      : _client = client ?? (BrowserClient()..withCredentials = false),
         _baseUrl = normalizeBaseUrl(baseUrl);
 
   final http.Client _client;
