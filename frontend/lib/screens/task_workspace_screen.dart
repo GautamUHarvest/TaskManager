@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
 
 import '../auth/auth_api.dart';
@@ -33,12 +35,66 @@ class _TaskWorkspaceScreenState extends State<TaskWorkspaceScreen> {
   List<Project> _projects = const [];
   int _unreadCount = 0;
 
+  /// Blocker alerts waiting to be shown. They are presented one at a time and
+  /// each is acknowledged only after the user taps OK, so a flurry of them
+  /// cannot stack dialogs on top of each other or be dismissed unseen.
+  StreamSubscription<BlockerAlert>? _blockerSubscription;
+  final List<BlockerAlert> _blockerQueue = <BlockerAlert>[];
+  bool _showingBlocker = false;
+
   @override
   void initState() {
     super.initState();
     _loadUsers();
     _loadProjects();
     _loadUnreadCount();
+    _blockerSubscription =
+        widget.controller.blockerAlerts.listen(_enqueueBlocker);
+  }
+
+  @override
+  void dispose() {
+    _blockerSubscription?.cancel();
+    super.dispose();
+  }
+
+  void _enqueueBlocker(BlockerAlert alert) {
+    _blockerQueue.add(alert);
+    _drainBlockerQueue();
+  }
+
+  /// Shows queued alerts one after another. Each dialog is modal and cannot be
+  /// dismissed by tapping away or pressing Escape — only the OK button closes
+  /// it, which is what then acknowledges it server-side. If that
+  /// acknowledgement fails the alert simply replays on the next connect,
+  /// which is the safe direction to fail in.
+  Future<void> _drainBlockerQueue() async {
+    if (_showingBlocker) return;
+    _showingBlocker = true;
+    try {
+      while (mounted && _blockerQueue.isNotEmpty) {
+        final alert = _blockerQueue.removeAt(0);
+        await showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => _BlockerAlertDialog(
+            alert: alert,
+            raisedByLabel: _createdByLabel(alert.notification.actorId),
+          ),
+        );
+        if (!mounted) return;
+        try {
+          await widget.controller.acknowledgeBlocker(alert.id);
+        } catch (_) {
+          // Left unacknowledged on purpose — better shown twice than lost.
+        }
+        if (!mounted) return;
+        // A blocker sets the task to 'blocked', so the bell count moved too.
+        _loadUnreadCount();
+      }
+    } finally {
+      _showingBlocker = false;
+    }
   }
 
   Future<void> _loadUsers() async {
@@ -634,6 +690,80 @@ class _TaskListPaneState extends State<_TaskListPane> {
             ),
           ));
         },
+      ),
+    );
+  }
+}
+
+/// The blocker alert itself: someone has flagged this user as holding up a
+/// task. Deliberately inescapable — `barrierDismissible: false` blocks a tap
+/// outside and the `PopScope` blocks Escape / browser back — so it stays on
+/// screen until OK is tapped, which is what the user asked for.
+class _BlockerAlertDialog extends StatelessWidget {
+  const _BlockerAlertDialog({
+    required this.alert,
+    required this.raisedByLabel,
+  });
+
+  final BlockerAlert alert;
+  final String raisedByLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final taskTitle = alert.task?.title;
+    return PopScope(
+      canPop: false,
+      child: AlertDialog(
+        icon: Icon(Icons.report_problem_outlined, color: theme.colorScheme.error),
+        title: const Text("You're blocking a task"),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (taskTitle != null) ...[
+                Text(
+                  taskTitle,
+                  style: theme.textTheme.titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 10),
+              ],
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.errorContainer.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  alert.message,
+                  style: theme.textTheme.bodyMedium,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Raised by $raisedByLabel',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+              if (alert.notification.createdAt != null)
+                Text(
+                  formatTaskDate(alert.notification.createdAt!),
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
       ),
     );
   }

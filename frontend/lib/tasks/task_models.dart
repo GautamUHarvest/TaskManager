@@ -283,6 +283,32 @@ class TaskDetail {
   final List<TaskComment> comments;
 }
 
+/// A blocker alert: someone flagged the signed-in user as responsible for
+/// holding up a task. Delivered live over the WebSocket, and replayed from
+/// `/notification/pending-blockers` for anything raised while they were
+/// offline. Shown as a modal that stays up until acknowledged, which is what
+/// [AppNotification.id] is then passed to `/notification/ack` for.
+class BlockerAlert {
+  const BlockerAlert({required this.notification, this.task});
+
+  factory BlockerAlert.fromJson(Map<String, dynamic> json) => BlockerAlert(
+        notification: AppNotification.fromJson(
+          json['notification'] as Map<String, dynamic>,
+        ),
+        // Present on the live push; absent on a replayed one, where the client
+        // only has the notification row.
+        task: json['task'] is Map<String, dynamic>
+            ? Task.fromJson(json['task'] as Map<String, dynamic>)
+            : null,
+      );
+
+  final AppNotification notification;
+  final Task? task;
+
+  int get id => notification.id;
+  String get message => notification.message;
+}
+
 class AppNotification {
   const AppNotification({
     required this.id,

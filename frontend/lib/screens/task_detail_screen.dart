@@ -153,6 +153,38 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
     if (created == true) _reload();
   }
 
+  /// Flags the task as blocked on another member and alerts them. They get a
+  /// modal popup immediately if they have a tab open, and on their next
+  /// connect otherwise.
+  Future<void> _raiseBlocker(Task task) async {
+    final myId = _myId;
+    final candidates = widget.usersById.values
+        // Flagging yourself is meaningless, and the server rejects it.
+        .where((user) => user.id != myId)
+        .toList(growable: false);
+    if (candidates.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No other members to flag.')),
+      );
+      return;
+    }
+    final updated = await showDialog<Task>(
+      context: context,
+      builder: (context) => _RaiseBlockerDialog(
+        controller: widget.controller,
+        task: task,
+        candidates: candidates,
+      ),
+    );
+    if (updated != null && mounted) {
+      _applyTask(updated);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Blocker raised. They have been notified.')),
+      );
+      _reload();
+    }
+  }
+
   Future<void> _editTask(Task task) async {
     // The dialog hands back the server's updated task so the page can repaint
     // with the new values before the refetch lands.
@@ -509,6 +541,10 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                           canDeleteTask: canDeleteTask,
                           onEditTask: () => _editTask(task),
                           onDeleteTask: () => _deleteTask(task),
+                          // Same rule as editing: creator or assignee. The
+                          // server re-checks.
+                          canRaiseBlocker: canEditTask,
+                          onRaiseBlocker: () => _raiseBlocker(task),
                         ),
                         const SizedBox(height: 20),
                         _SubtasksSection(
@@ -722,6 +758,8 @@ class _HeaderCard extends StatelessWidget {
     required this.canDeleteTask,
     required this.onEditTask,
     required this.onDeleteTask,
+    required this.canRaiseBlocker,
+    required this.onRaiseBlocker,
   });
 
   final Task task;
@@ -734,6 +772,8 @@ class _HeaderCard extends StatelessWidget {
   final bool canDeleteTask;
   final VoidCallback onEditTask;
   final VoidCallback onDeleteTask;
+  final bool canRaiseBlocker;
+  final VoidCallback onRaiseBlocker;
 
   @override
   Widget build(BuildContext context) {
@@ -779,6 +819,15 @@ class _HeaderCard extends StatelessWidget {
                     onPressed: onChangeStatus,
                     icon: const Icon(Icons.swap_horiz, size: 18),
                     label: const Text('Change status'),
+                  ),
+                if (canRaiseBlocker)
+                  OutlinedButton.icon(
+                    onPressed: onRaiseBlocker,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: theme.colorScheme.error,
+                    ),
+                    icon: const Icon(Icons.report_problem_outlined, size: 18),
+                    label: const Text('Blocker'),
                   ),
               ],
             ),
@@ -1630,6 +1679,175 @@ class _CenteredCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Raise a blocker: pick the member holding the task up and say why. On
+/// submit the task is flagged `blocked` and that member gets an alert — a
+/// modal popup straight away if they have a tab open, replayed on their next
+/// connect if not. Pops the updated task so the caller can repaint.
+class _RaiseBlockerDialog extends StatefulWidget {
+  const _RaiseBlockerDialog({
+    required this.controller,
+    required this.task,
+    required this.candidates,
+  });
+
+  final AuthController controller;
+  final Task task;
+
+  /// Everyone who could be named — the signed-in user is already excluded.
+  final List<AuthUser> candidates;
+
+  @override
+  State<_RaiseBlockerDialog> createState() => _RaiseBlockerDialogState();
+}
+
+class _RaiseBlockerDialogState extends State<_RaiseBlockerDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _messageController = TextEditingController();
+  int? _responsibleId;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    // Default to the only candidate when there is exactly one, so the common
+    // two-person case is a single tap.
+    if (widget.candidates.length == 1) {
+      _responsibleId = widget.candidates.first.id;
+    }
+  }
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    final responsibleId = _responsibleId;
+    if (responsibleId == null) {
+      setState(() => _error = 'Choose who is blocking this task.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final updated = await widget.controller.raiseBlocker(
+        taskId: widget.task.id,
+        responsibleUserId: responsibleId,
+        message: _messageController.text.trim(),
+      );
+      if (mounted) Navigator.pop(context, updated);
+    } on AuthApiException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _error =
+            'Could not reach the server. Check the connection and try again.');
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AlertDialog(
+      icon: Icon(Icons.report_problem_outlined, color: theme.colorScheme.error),
+      title: const Text('Raise a blocker'),
+      content: SizedBox(
+        width: 420,
+        child: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  widget.task.title,
+                  style: theme.textTheme.titleSmall
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<int>(
+                  initialValue: _responsibleId,
+                  decoration: const InputDecoration(
+                    labelText: 'Who is blocking this?',
+                  ),
+                  items: [
+                    for (final user in widget.candidates)
+                      DropdownMenuItem<int>(
+                        value: user.id,
+                        child: Text('${user.displayName} · ${user.employeeId}'),
+                      ),
+                  ],
+                  onChanged: (value) => setState(() => _responsibleId = value),
+                  validator: (value) =>
+                      value == null ? 'Choose a member' : null,
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _messageController,
+                  autofocus: true,
+                  minLines: 3,
+                  maxLines: 6,
+                  maxLength: 4000,
+                  decoration: const InputDecoration(
+                    labelText: 'What is blocked, and what do you need?',
+                  ),
+                  validator: (value) {
+                    final text = value?.trim() ?? '';
+                    if (text.isEmpty) return 'Describe the blocker';
+                    if (text.length > 4000) {
+                      return 'Message must be 4000 characters or fewer';
+                    }
+                    return null;
+                  },
+                ),
+                Text(
+                  'This sets the task to Blocked and alerts them right away.',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                ),
+                if (_error != null) ...[
+                  const SizedBox(height: 12),
+                  Text(_error!,
+                      style: TextStyle(color: theme.colorScheme.error)),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _busy ? null : () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: theme.colorScheme.error,
+            foregroundColor: theme.colorScheme.onError,
+          ),
+          onPressed: _busy ? null : _submit,
+          child: _busy
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Raise blocker'),
+        ),
+      ],
     );
   }
 }

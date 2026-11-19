@@ -31,6 +31,12 @@ class TaskController
                     drogon::AdviceCallback &&callback);
     void deleteTask(const drogon::HttpRequestPtr &request,
                     drogon::AdviceCallback &&callback);
+    void raiseBlocker(const drogon::HttpRequestPtr &request,
+                      drogon::AdviceCallback &&callback);
+    void pendingBlockers(const drogon::HttpRequestPtr &request,
+                         drogon::AdviceCallback &&callback);
+    void acknowledgeNotification(const drogon::HttpRequestPtr &request,
+                                 drogon::AdviceCallback &&callback);
     void updateNote(const drogon::HttpRequestPtr &request,
                     drogon::AdviceCallback &&callback);
     void deleteNote(const drogon::HttpRequestPtr &request,

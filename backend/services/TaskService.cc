@@ -557,6 +557,89 @@ void TaskService::deleteTask(const std::string &accessToken,
     repository_.deleteTask(taskId);
 }
 
+BlockerRaised TaskService::raiseBlocker(const std::string &accessToken,
+                                        std::int64_t taskId,
+                                        std::int64_t responsibleId,
+                                        const std::string &message)
+{
+    const auto user = auth_.profile(accessToken);
+    if (taskId <= 0)
+    {
+        throw std::invalid_argument("Field 'task_id' must be a positive id");
+    }
+    if (responsibleId <= 0)
+    {
+        throw std::invalid_argument(
+            "Field 'responsible_user_id' must be a positive id");
+    }
+    if (responsibleId == user.id)
+    {
+        throw std::invalid_argument(
+            "You cannot flag yourself as the blocker");
+    }
+    const std::string trimmedMessage = normalizeBody(message);
+
+    const auto task = repository_.findTask(taskId);
+    if (!task)
+    {
+        throw std::invalid_argument("Task not found");
+    }
+    const bool isCreator = task->createdById == user.id;
+    const bool isAssignee = std::find(task->assigneeIds.begin(),
+                                      task->assigneeIds.end(),
+                                      user.id) != task->assigneeIds.end();
+    if (!isCreator && !isAssignee)
+    {
+        throw ForbiddenError(
+            "Only the task's creator or an assignee can raise a blocker");
+    }
+
+    // The responsible member must be a real, active user. The notifications
+    // foreign key would catch a bad id, but only as an opaque constraint
+    // failure — check it here so the message names the field.
+    const auto users = repository_.listUsers();
+    const bool responsibleExists =
+        std::find_if(users.begin(), users.end(), [responsibleId](
+                                                     const UserRecord &record) {
+            return record.id == responsibleId;
+        }) != users.end();
+    if (!responsibleExists)
+    {
+        throw std::invalid_argument(
+            "Field 'responsible_user_id' must reference an active user");
+    }
+
+    const std::string notificationMessage =
+        user.displayName + " flagged you as blocking \"" + task->title +
+        "\": " + trimmedMessage;
+    return repository_.raiseBlocker(
+        taskId, user.id, responsibleId, trimmedMessage, notificationMessage);
+}
+
+std::vector<NotificationRecord> TaskService::pendingBlockers(
+    const std::string &accessToken)
+{
+    const auto user = auth_.profile(accessToken);
+    return repository_.listPendingBlockers(user.id);
+}
+
+void TaskService::acknowledgeNotification(const std::string &accessToken,
+                                          std::int64_t notificationId)
+{
+    const auto user = auth_.profile(accessToken);
+    if (notificationId <= 0)
+    {
+        throw std::invalid_argument(
+            "Field 'notification_id' must be a positive id");
+    }
+    if (!repository_.acknowledgeNotification(notificationId, user.id))
+    {
+        // Covers both "no such row" and "belongs to someone else" — not
+        // distinguished, so one user cannot probe for another's ids.
+        throw std::invalid_argument("Notification not found");
+    }
+}
+
 TaskNoteRecord TaskService::editNote(const std::string &accessToken,
                                      std::int64_t noteId,
                                      const std::string &body)

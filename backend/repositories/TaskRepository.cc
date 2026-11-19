@@ -1135,13 +1135,21 @@ std::int64_t TaskRepository::countCommentDescendants(std::int64_t id)
 
 // --- Notifications ---
 
-void TaskRepository::createNotification(std::int64_t recipientId,
-                                        std::int64_t actorId,
-                                        std::int64_t taskId,
-                                        const std::string &type,
-                                        const std::string &message)
+namespace
 {
-    Connection connection(databasePath_);
+constexpr const char *kNotificationColumns =
+    "id, recipient_id, actor_id, task_id, notification_type, message, "
+    "created_at, read_at";
+
+// Inserts a notification on an existing connection (so it can join a wider
+// transaction) and reads the stored row back.
+NotificationRecord insertNotification(Connection &connection,
+                                      std::int64_t recipientId,
+                                      std::int64_t actorId,
+                                      std::int64_t taskId,
+                                      const std::string &type,
+                                      const std::string &message)
+{
     Statement insert(
         connection.get(),
         "INSERT INTO notifications (recipient_id, actor_id, task_id, "
@@ -1152,6 +1160,129 @@ void TaskRepository::createNotification(std::int64_t recipientId,
     insert.bindText(4, type);
     insert.bindText(5, message);
     insert.step();
+
+    const std::int64_t id = sqlite3_last_insert_rowid(connection.get());
+    Statement select(connection.get(),
+                     std::string("SELECT ") + kNotificationColumns +
+                         " FROM notifications WHERE id = ?1");
+    select.bindInt64(1, id);
+    if (select.step() != SQLITE_ROW)
+    {
+        throw std::runtime_error("Created notification could not be read back");
+    }
+    return notificationFromStatement(select);
+}
+}  // namespace
+
+NotificationRecord TaskRepository::createNotification(
+    std::int64_t recipientId,
+    std::int64_t actorId,
+    std::int64_t taskId,
+    const std::string &type,
+    const std::string &message)
+{
+    Connection connection(databasePath_);
+    return insertNotification(
+        connection, recipientId, actorId, taskId, type, message);
+}
+
+std::vector<NotificationRecord> TaskRepository::listPendingBlockers(
+    std::int64_t recipientId)
+{
+    Connection connection(databasePath_);
+    Statement statement(connection.get(),
+                        std::string("SELECT ") + kNotificationColumns +
+                            " FROM notifications WHERE recipient_id = ?1 "
+                            "AND notification_type = ?2 AND read_at IS NULL "
+                            "ORDER BY created_at, id");
+    statement.bindInt64(1, recipientId);
+    statement.bindText(2, kBlockerNotificationType);
+    std::vector<NotificationRecord> pending;
+    while (statement.step() == SQLITE_ROW)
+    {
+        pending.push_back(notificationFromStatement(statement));
+    }
+    return pending;
+}
+
+bool TaskRepository::acknowledgeNotification(std::int64_t notificationId,
+                                             std::int64_t recipientId)
+{
+    Connection connection(databasePath_);
+    // Scoped to the recipient so one user cannot dismiss another's alert.
+    // Already-acknowledged rows are left as they are, keeping the original
+    // timestamp, and still report success.
+    Statement update(
+        connection.get(),
+        "UPDATE notifications SET read_at = "
+        "strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+        "WHERE id = ?1 AND recipient_id = ?2 AND read_at IS NULL");
+    update.bindInt64(1, notificationId);
+    update.bindInt64(2, recipientId);
+    update.step();
+
+    Statement exists(
+        connection.get(),
+        "SELECT 1 FROM notifications WHERE id = ?1 AND recipient_id = ?2");
+    exists.bindInt64(1, notificationId);
+    exists.bindInt64(2, recipientId);
+    return exists.step() == SQLITE_ROW;
+}
+
+BlockerRaised TaskRepository::raiseBlocker(
+    std::int64_t taskId,
+    std::int64_t actorId,
+    std::int64_t responsibleId,
+    const std::string &eventDetail,
+    const std::string &notificationMessage)
+{
+    Connection connection(databasePath_);
+    connection.execute("BEGIN IMMEDIATE");
+    try
+    {
+        {
+            Statement exists(connection.get(),
+                             "SELECT 1 FROM tasks WHERE id = ?1");
+            exists.bindInt64(1, taskId);
+            if (exists.step() != SQLITE_ROW)
+            {
+                throw std::invalid_argument("Task not found");
+            }
+        }
+
+        Statement update(
+            connection.get(),
+            "UPDATE tasks SET status = 'blocked', version = version + 1, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+            "WHERE id = ?1");
+        update.bindInt64(1, taskId);
+        update.step();
+
+        insertEvent(connection, taskId, actorId, "blocked", eventDetail);
+
+        BlockerRaised raised;
+        raised.notification = insertNotification(connection,
+                                                 responsibleId,
+                                                 actorId,
+                                                 taskId,
+                                                 kBlockerNotificationType,
+                                                 notificationMessage);
+        raised.task = taskById(connection, taskId);
+        connection.execute("COMMIT");
+        return raised;
+    }
+    catch (...)
+    {
+        const int errorCode = sqlite3_extended_errcode(connection.get());
+        connection.execute("ROLLBACK");
+        if ((errorCode & 0xff) == SQLITE_CONSTRAINT)
+        {
+            throw std::invalid_argument(
+                "Invalid blocker: the task or the responsible member does not "
+                "exist");
+        }
+        throw;
+    }
 }
 
 std::vector<std::int64_t> TaskRepository::listAssigneeIds(std::int64_t taskId)

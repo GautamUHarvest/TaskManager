@@ -22,7 +22,10 @@ namespace
 // same-origin deployment never sends these OPTIONS requests.
 bool isTaskRoute(const std::string &path)
 {
-    constexpr std::array<std::string_view, 19> paths = {
+    constexpr std::array<std::string_view, 22> paths = {
+        "/api/task/block",
+        "/api/notification/pending-blockers",
+        "/api/notification/ack",
         "/api/task/add",
         "/api/task/subtask",
         "/api/task/note",
@@ -47,7 +50,9 @@ bool isTaskRoute(const std::string &path)
 
 std::string expectedMethod(const std::string &path)
 {
-    constexpr std::array<std::string_view, 12> postPaths = {
+    constexpr std::array<std::string_view, 14> postPaths = {
+        "/api/task/block",
+        "/api/notification/ack",
         "/api/task/add",
         "/api/task/subtask",
         "/api/task/note",
@@ -301,6 +306,16 @@ void registerTaskRoutes(const std::shared_ptr<TaskController> &controller)
         },
         {drogon::Get, "taskmanager::ErrorMiddleware"});
 
+    // Blockers: raising one flags the task blocked and alerts the member held
+    // responsible, live over the WebSocket when they are connected.
+    app.registerHandler(
+        "/api/task/block",
+        [controller](const drogon::HttpRequestPtr &request,
+                     drogon::AdviceCallback &&callback) {
+            controller->raiseBlocker(request, std::move(callback));
+        },
+        {drogon::Post, "taskmanager::ErrorMiddleware"});
+
     // Notifications: /api/notification/*
     app.registerHandler(
         "/api/notification/all",
@@ -309,6 +324,22 @@ void registerTaskRoutes(const std::shared_ptr<TaskController> &controller)
             controller->notifications(request, std::move(callback));
         },
         {drogon::Get, "taskmanager::ErrorMiddleware"});
+
+    app.registerHandler(
+        "/api/notification/pending-blockers",
+        [controller](const drogon::HttpRequestPtr &request,
+                     drogon::AdviceCallback &&callback) {
+            controller->pendingBlockers(request, std::move(callback));
+        },
+        {drogon::Get, "taskmanager::ErrorMiddleware"});
+
+    app.registerHandler(
+        "/api/notification/ack",
+        [controller](const drogon::HttpRequestPtr &request,
+                     drogon::AdviceCallback &&callback) {
+            controller->acknowledgeNotification(request, std::move(callback));
+        },
+        {drogon::Post, "taskmanager::ErrorMiddleware"});
 }
 
 }  // namespace taskmanager

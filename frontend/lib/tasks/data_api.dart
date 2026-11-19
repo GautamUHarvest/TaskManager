@@ -216,6 +216,58 @@ class DataApi {
     return json['deleted_reply_count'] as int? ?? 0;
   }
 
+  /// Raise a blocker via `POST /task/block`: flags the task as blocked and
+  /// alerts [responsibleUserId], who is pushed the alert live if they are
+  /// connected. Callable by the task's creator or any assignee; naming
+  /// yourself is rejected. Returns the task with its new `blocked` status.
+  Future<Task> raiseBlocker({
+    required String token,
+    required int taskId,
+    required int responsibleUserId,
+    required String message,
+  }) async {
+    final json = await _client.post(
+      '/task/block',
+      {
+        'task_id': taskId,
+        'responsible_user_id': responsibleUserId,
+        'message': message,
+      },
+      token: token,
+    );
+    return Task.fromJson(json['task'] as Map<String, dynamic>);
+  }
+
+  /// Blocker alerts raised against the signed-in user that they have not
+  /// acknowledged yet. Fetched on connect so one raised while they were
+  /// offline still gets shown.
+  Future<List<BlockerAlert>> pendingBlockers(String token) async {
+    final json = await _client.get(
+      '/notification/pending-blockers',
+      token: token,
+      noCache: true,
+    );
+    final items = json['notifications'] as List<dynamic>? ?? const [];
+    return items
+        .map((item) => BlockerAlert(
+              notification:
+                  AppNotification.fromJson(item as Map<String, dynamic>),
+            ))
+        .toList(growable: false);
+  }
+
+  /// Dismiss one of the signed-in user's own alerts so it is not replayed.
+  Future<void> acknowledgeNotification({
+    required String token,
+    required int notificationId,
+  }) async {
+    await _client.post(
+      '/notification/ack',
+      {'notification_id': notificationId},
+      token: token,
+    );
+  }
+
   /// Fetch a task together with its direct subtasks and notes via
   /// `GET /task/detail?task_id=...`. Cache-busted so a note/status change made
   /// moments earlier is reflected on reload.

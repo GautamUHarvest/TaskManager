@@ -149,4 +149,19 @@ struct NotificationRecord
     std::optional<std::string> readAt;
 };
 
+// notification_type for a blocker alert. These are the only notifications the
+// client pops as a modal and the only ones replayed on reconnect, so the
+// string is shared rather than written out at each site.
+inline constexpr const char *kBlockerNotificationType = "blocker";
+
+// Outcome of raising a blocker, in one transaction: the task with its new
+// 'blocked' status and bumped version, plus the notification created for the
+// member held responsible. The caller pushes that notification over the
+// WebSocket; the stored row is what guarantees delivery if they are offline.
+struct BlockerRaised
+{
+    TaskRecord task;
+    NotificationRecord notification;
+};
+
 }  // namespace taskmanager

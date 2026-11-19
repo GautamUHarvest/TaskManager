@@ -9,6 +9,7 @@
 #include "routes/AuthRoutes.h"
 #include "routes/TaskRoutes.h"
 #include "services/AuthService.h"
+#include "services/BlockerHub.h"
 #include "services/TaskService.h"
 
 #include <cstdlib>
@@ -58,6 +59,13 @@ int main()
         taskmanager::AuthService auth(
             repository, requiredEnvironment("TASK_MANAGER_JWT_SECRET"));
         trantor::ConcurrentTaskQueue authWorkers(2, "auth-workers");
+        // Hand the notification hub the AuthService, so WebSocket clients can
+        // authenticate with the same access tokens the REST API issues, and
+        // the worker queue, so that token check (which reads SQLite) stays off
+        // the event loop. BlockerSocketController registers its own route —
+        // Drogon has no non-macro WebSocket registration — so there is nothing
+        // else to wire.
+        taskmanager::BlockerHub::instance().configure(&auth, &authWorkers);
         drogon::app().registerMiddleware(
             std::make_shared<taskmanager::ErrorMiddleware>());
         auto authController =

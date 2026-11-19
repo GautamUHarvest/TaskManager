@@ -105,6 +105,49 @@ summarised here because it is the only part with a per-record permission rule:
 | `POST /api/task/comment/update` | `comment_id`, `body` | The comment's author only |
 | `POST /api/task/comment/delete` | `comment_id` | The comment's author only; nested replies cascade |
 
+### Blockers and the WebSocket
+
+`POST /api/task/block` flags a task as blocked on another member — setting the
+status to `blocked`, logging a `blocked` event and storing a `blocker`
+notification — then pushes that notification to the member's open sockets.
+
+The socket lives at `/ws/notifications` and is the one place this backend uses
+a Drogon auto-registering controller (`controllers/BlockerSocketController`),
+because Drogon offers no non-macro WebSocket route registration. It
+authenticates by **first message**, not by header or query string:
+
+```
+client -> {"type":"auth","access_token":"<jwt>"}
+server -> {"type":"auth_ok","user_id":3}
+```
+
+A browser cannot set `Authorization` on a WebSocket handshake, and a token in
+the query string would be logged by nginx and Drogon — which this README
+forbids below. Unauthenticated sockets are closed after 10 seconds, and the
+handshake's `Origin` is checked against `TASK_MANAGER_CORS_ORIGIN` because CORS
+does not apply to WebSockets. Token verification reads SQLite, so it is
+dispatched to the `auth-workers` queue rather than run on the event loop.
+
+Live delivery is best-effort: `services/BlockerHub` keeps an in-memory map of
+user id → connections, so it is **per process**, the same single-process
+assumption the SQLite setup and the IP rate limiter already make. A member with
+no open tab is covered by the stored notification, which the client replays via
+`GET /api/notification/pending-blockers` and dismisses with
+`POST /api/notification/ack`.
+
+**nginx must be told to proxy WebSockets** — without this the handshake fails
+and clients reconnect forever:
+
+```nginx
+location /ws/ {
+    proxy_pass https://127.0.0.1:5555;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 3600s;
+}
+```
+
 A caller with a valid token who fails one of these rules gets `403 Forbidden`
 (`ForbiddenError` in `services/AuthService.h`, mapped in `ErrorMiddleware`).
 Deleting a task also clears its notes, events and notifications by hand,

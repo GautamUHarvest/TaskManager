@@ -400,6 +400,63 @@ Errors: `400` (missing/invalid field, bad status value, non-existent task), `401
 
 ---
 
+### Blockers (real-time)
+
+#### `POST /api/task/block`
+Flag a task as blocked on another member and alert them. Auth: **Bearer**. Callable by the task's creator or any of its assignees.
+
+In one transaction this sets the task's `status` to `blocked`, bumps its `version`, records a `blocked` task event, and stores a `blocker` notification for the named member. It is then pushed to that member's open WebSocket connections (see §6); if they have none, the stored notification is what they are shown on their next connect.
+
+| Field | Type | Required | Rules |
+| --- | --- | --- | --- |
+| `task_id` | integer | **yes** | Must be an existing task id, else `400`. |
+| `responsible_user_id` | integer | **yes** | Must be an existing active user, and **not** the caller, else `400`. |
+| `message` | string | **yes** | 1–4000 characters (trimmed); blank → `400`. |
+
+Request:
+```json
+{ "task_id": 12, "responsible_user_id": 4, "message": "Waiting on the revised wiring diagram." }
+```
+Success `201 Created`:
+```json
+{
+  "message": "Blocker raised",
+  "task": { "...": "task object, status now \"blocked\", version incremented" },
+  "notification": { "...": "notification object, notification_type \"blocker\"" }
+}
+```
+Errors: `400` (bad field, unknown task/member, naming yourself), `401`, `403` (not the creator or an assignee).
+
+---
+
+#### `GET /api/notification/pending-blockers`
+Blocker alerts raised against the caller that they have not acknowledged, oldest first. Auth: **Bearer**. The client fetches this on connect so an alert raised while they were offline is still shown.
+
+Success `200 OK`:
+```json
+{ "notifications": [ { "...": "notification object with read_at: null" } ] }
+```
+Errors: `401`.
+
+---
+
+#### `POST /api/notification/ack`
+Acknowledge one of the caller's own notifications by stamping its `read_at`, so it stops being replayed. Auth: **Bearer**.
+
+| Field | Type | Required | Rules |
+| --- | --- | --- | --- |
+| `notification_id` | integer | **yes** | Must be an existing notification **owned by the caller**, else `400`. |
+
+Acknowledging twice is not an error; the original timestamp is kept. A notification belonging to someone else reports the same "not found" as one that does not exist, so ids cannot be probed.
+
+Success `200 OK`:
+```json
+{ "message": "Notification acknowledged", "notification_id": 5 }
+```
+Errors: `400` (unknown id, or not yours), `401`.
+
+---
+
 ### Editing and deleting
 
 These five endpoints share one permission model. A `403 Forbidden` means the
@@ -633,6 +690,10 @@ Errors: `401`.
 | POST | `/api/task/note` | Bearer | `task_id`, `body` |
 | POST | `/api/task/comment` | Bearer | `task_id`, `body`(+ optional `parent_comment_id`) → notifies assignees + parent-comment author |
 | POST | `/api/task/status` | Bearer | `task_id`, `status` |
+| POST | `/api/task/block` | Bearer | `task_id`, `responsible_user_id`, `message` → sets status `blocked`, alerts them live |
+| GET | `/api/notification/pending-blockers` | Bearer | — → unacknowledged blocker alerts for the caller |
+| POST | `/api/notification/ack` | Bearer | `notification_id` → stops it being replayed |
+| WS | `/ws/notifications` | first-message auth | see §6 |
 | POST | `/api/task/update` | Bearer | `task_id` + any editable field (partial; `null` clears) → creator or assignee |
 | POST | `/api/task/delete` | Bearer | `task_id` → creator only; refuses while subtasks remain |
 | POST | `/api/task/note/update` | Bearer | `note_id`, `body` → author only |
@@ -648,7 +709,73 @@ Errors: `401`.
 | GET | `/api/user/all` | Bearer | — |
 | GET | `/api/notification/all` | Bearer | — |
 
-## 6. Not yet implemented (planned)
+## 6. WebSocket — live blocker alerts
+
+| Context | URL |
+| --- | --- |
+| Production (nginx, same origin) | `wss://<host>/ws/notifications` |
+| Direct local dev | `wss://<host>:5555/ws/notifications` |
+
+The scheme follows the page: `https` → `wss`, `http` → `ws`.
+
+**Authentication is by first message, not by header or query string.** A browser
+cannot set `Authorization` on a WebSocket handshake, and a token in the query
+string would be written into nginx and Drogon access logs — which
+`backend/README.md` forbids. So the socket opens unauthenticated and the client
+immediately sends:
+
+```json
+{ "type": "auth", "access_token": "<jwt>" }
+```
+
+The server replies `{"type":"auth_ok","user_id":3}`, or sends
+`{"type":"error","error":"..."}` and closes with code `1008`. A socket that has
+not authenticated within **10 seconds** is closed. The connection's `Origin` is
+checked against `TASK_MANAGER_CORS_ORIGIN` at handshake time, because CORS does
+not apply to WebSockets.
+
+After authenticating, the client may send `{"type":"ping"}` and gets
+`{"type":"pong"}` — used to keep idle proxies from reaping the connection
+(nginx's default read timeout is 60s; the client pings every 30s).
+
+**Server → client**, when a blocker names this user:
+
+```json
+{
+  "type": "blocker",
+  "notification": { "...": "notification object" },
+  "task": { "...": "task object" }
+}
+```
+
+Delivery is best-effort and goes to **every** open tab for that user. A user
+with no live socket gets nothing pushed — the stored notification row is the
+guarantee, replayed via `GET /api/notification/pending-blockers` on the next
+connect. The client shows each alert as a modal that cannot be dismissed except
+by its OK button, which then calls `POST /api/notification/ack`.
+
+**Deployment note:** nginx does not proxy WebSockets without being told to. The
+`/ws/` location needs:
+
+```nginx
+location /ws/ {
+    proxy_pass https://127.0.0.1:5555;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 3600s;
+}
+```
+
+Without `Upgrade`/`Connection`, the handshake fails and the client falls back to
+reconnect attempts forever.
+
+Socket state is **per backend process** (an in-memory map of user id →
+connections), the same single-process assumption the SQLite setup and the IP
+rate limiter already make. Two backend processes would each only reach their own
+clients.
+
+## 7. Not yet implemented (planned)
 
 - Reading the task event history. `task_events` is **written** by
   `POST /api/task/subtask`, `POST /api/task/status` and `POST /api/task/update`,
@@ -657,7 +784,8 @@ Errors: `401`.
 - Optimistic concurrency on edit and status change. `version` is returned and
   incremented, but no endpoint accepts a client-supplied expected `version`, so
   two concurrent edits silently last-write-wins.
-- Marking notifications read (they are **written** on `POST /api/task/comment` — to each assignee and, on a reply, the parent comment's author, excluding the comment's own author — and on no other action yet, but there is still no mark-as-read endpoint).
+- Marking **non-blocker** notifications read. `POST /api/notification/ack` works on any of the caller's notifications, but only the blocker modal calls it; the bell still filters what it has shown in memory for the session, so a comment notification reappears after a reload.
+- Clearing a blocker. A task can be flagged `blocked` via `POST /api/task/block`, but the only way back out is a plain `POST /api/task/status` — which records a `status_changed` event, not the `unblocked` one the schema allows, and does not notify the member who raised it.
 - Notifications on edit/delete. Reassigning a task via `POST /api/task/update`
   does not notify the new assignees, and deleting a task or comment notifies
   nobody.

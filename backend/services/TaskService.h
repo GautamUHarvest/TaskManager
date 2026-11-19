@@ -82,6 +82,23 @@ class TaskService
     // subtasks — those must be dealt with first.
     void deleteTask(const std::string &accessToken, std::int64_t taskId);
 
+    // --- Blockers ----------------------------------------------------------
+    // Flags the task as blocked on `responsibleId` and stores an alert for
+    // them. May be called by the task's creator or any of its assignees (the
+    // same rule as editing); naming yourself is rejected. Sets the status to
+    // 'blocked', bumps the version and logs a 'blocked' event.
+    BlockerRaised raiseBlocker(const std::string &accessToken,
+                               std::int64_t taskId,
+                               std::int64_t responsibleId,
+                               const std::string &message);
+    // Blocker alerts the caller has not acknowledged yet, oldest first, so a
+    // client that was offline when one was raised can still show it.
+    std::vector<NotificationRecord> pendingBlockers(
+        const std::string &accessToken);
+    // Dismisses one of the caller's own alerts so it is not replayed.
+    void acknowledgeNotification(const std::string &accessToken,
+                                 std::int64_t notificationId);
+
     TaskNoteRecord editNote(const std::string &accessToken,
                             std::int64_t noteId,
                             const std::string &body);

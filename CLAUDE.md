@@ -57,6 +57,35 @@ Request flow: **route → `ErrorMiddleware` → controller → `AuthService` →
 1. **Auth + task reads are implemented; writes are not, and the schema is the whole app.** Migration `001_initial_schema.sql` defines `tasks`, `task_notes`, `task_events`, and `notifications` — the full task-manager domain. The Task stack ([models/Task.h](backend/models/Task.h), [repositories/TaskRepository.cc](backend/repositories/TaskRepository.cc), [services/TaskService.cc](backend/services/TaskService.cc), [controllers/TaskController.cc](backend/controllers/TaskController.cc), [routes/TaskRoutes.cc](backend/routes/TaskRoutes.cc)) serves the list reads plus `POST /api/addtask` (create). There is still no update/delete/status-change, no `task_notes`/`task_events` handling, and notifications are read but never written. Note `TaskRepository`'s `Connection` enables `PRAGMA foreign_keys = ON`, so create relies on FK enforcement (bad `assignee_id`/`parent_task_id` → `SQLITE_CONSTRAINT` → mapped to 400). The Task stack **intentionally duplicates** the Auth stack's SQLite `Connection`/`Statement` helpers and the controller's `bearerToken`/`jsonResponse`/`run` helpers — a modularity refactor to share them is planned. `TaskService` authenticates by calling `AuthService::profile(token)`. The schema already anticipates subtasks (`parent_task_id`), optimistic concurrency (`tasks.version`), an event log, and notifications.
 2. **Email verification is disabled and its code is dormant.** Migration `003_disable_email_verification.sql` activates accounts directly; `register` creates an active account. `VerificationMailer` ([backend/services/AuthService.h](backend/services/AuthService.h)) and `SmtpMailer` ([backend/services/SmtpMailer.cc](backend/services/SmtpMailer.cc)) still exist but are **not wired into `main.cc`**. The frontend README's "email verification" step is stale.
 
+### Real-time blockers (the one deviation from manual wiring)
+
+`POST /api/task/block` flags a task `blocked` and alerts the member held
+responsible over a WebSocket at `/ws/notifications`.
+[backend/controllers/BlockerSocketController](backend/controllers/BlockerSocketController.h)
+is the **only** Drogon auto-registering controller in the codebase — it uses
+`WS_PATH_LIST_BEGIN`/`WS_PATH_ADD` because Drogon has no non-macro WebSocket
+route registration. It needs no `main.cc` registration; the vtable emitted in
+its `.cc` triggers the static registrar.
+
+- **Auth is by first message**, not header or query string:
+  `{"type":"auth","access_token":"<jwt>"}`. Browsers cannot set
+  `Authorization` on a WS handshake, and a token in the URL would be logged.
+  Unauthenticated sockets close after 10s; `Origin` is checked against
+  `TASK_MANAGER_CORS_ORIGIN` since CORS does not apply to WebSockets.
+- **Token verification is dispatched to the `auth-workers` queue**, never run
+  inline — it reads SQLite, and `handleNewMessage` runs on the event loop.
+- [backend/services/BlockerHub](backend/services/BlockerHub.h) is a singleton
+  (Drogon constructs WS controllers itself, so there is nowhere to inject);
+  `main.cc` calls `configure(&auth, &authWorkers)`. Its socket map is
+  **per-process**, same single-process assumption as SQLite and the rate
+  limiter.
+- Live push is best-effort. The stored `blocker` notification is the delivery
+  guarantee, replayed via `GET /api/notification/pending-blockers` and
+  dismissed with `POST /api/notification/ack`.
+- **nginx needs an explicit `/ws/` location** with `Upgrade`/`Connection`
+  headers — see backend/README.md. Without it the handshake fails silently and
+  clients reconnect forever.
+
 ## Domain constraints to preserve
 
 - **Email domain is enforced in two places** that must stay in sync: SQLite triggers in `002_authentication.sql` (`@uharvest.in` only) and `security::validEmail`. Changing the allowed domain requires updating both.

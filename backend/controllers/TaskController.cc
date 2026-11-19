@@ -2,6 +2,7 @@
 
 #include "../error_middleware/ErrorMiddleware.h"
 #include "../services/AuthService.h"
+#include "../services/BlockerHub.h"
 
 #include <algorithm>
 #include <cctype>
@@ -526,6 +527,63 @@ void TaskController::deleteTask(const drogon::HttpRequestPtr &request,
         Json::Value response;
         response["message"] = "Task deleted";
         response["deleted_task_id"] = Json::Int64(taskId);
+        return jsonResponse(drogon::k200OK, response);
+    });
+}
+
+void TaskController::raiseBlocker(const drogon::HttpRequestPtr &request,
+                                  drogon::AdviceCallback &&callback)
+{
+    const auto token = bearerToken(request);
+    const auto body = requiredBody(request);
+    run(request, std::move(callback), [this, token, body]() {
+        const auto raised =
+            service_.raiseBlocker(token,
+                                  requiredInt64(body, "task_id"),
+                                  requiredInt64(body, "responsible_user_id"),
+                                  requiredString(body, "message"));
+
+        // Push to the responsible member's live sockets, if any. A user who
+        // is offline gets nothing here — the stored notification is what they
+        // will be shown on their next connect, via /notification/pending-blockers.
+        Json::Value event;
+        event["type"] = "blocker";
+        event["notification"] = notificationJson(raised.notification);
+        event["task"] = taskJson(raised.task);
+        BlockerHub::instance().pushTo(raised.notification.recipientId, event);
+
+        Json::Value response;
+        response["message"] = "Blocker raised";
+        response["task"] = taskJson(raised.task);
+        response["notification"] = notificationJson(raised.notification);
+        return jsonResponse(drogon::k201Created, response);
+    });
+}
+
+void TaskController::pendingBlockers(const drogon::HttpRequestPtr &request,
+                                     drogon::AdviceCallback &&callback)
+{
+    const auto token = bearerToken(request);
+    run(request, std::move(callback), [this, token]() {
+        Json::Value response;
+        response["notifications"] =
+            jsonArray(service_.pendingBlockers(token), notificationJson);
+        return jsonResponse(drogon::k200OK, response);
+    });
+}
+
+void TaskController::acknowledgeNotification(
+    const drogon::HttpRequestPtr &request,
+    drogon::AdviceCallback &&callback)
+{
+    const auto token = bearerToken(request);
+    const auto body = requiredBody(request);
+    run(request, std::move(callback), [this, token, body]() {
+        const auto notificationId = requiredInt64(body, "notification_id");
+        service_.acknowledgeNotification(token, notificationId);
+        Json::Value response;
+        response["message"] = "Notification acknowledged";
+        response["notification_id"] = Json::Int64(notificationId);
         return jsonResponse(drogon::k200OK, response);
     });
 }

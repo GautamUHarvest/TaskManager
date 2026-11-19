@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
+import '../realtime/blocker_socket.dart';
 import '../tasks/data_api.dart';
 import '../tasks/task_models.dart';
 import 'auth_api.dart';
@@ -26,6 +29,23 @@ class AuthController extends ChangeNotifier {
   /// dialog on subsequent refreshes within this session (reload clears it,
   /// matching the rest of this app's in-memory-only session model).
   final Set<int> _readNotificationIds = <int>{};
+
+  // --- Real-time blocker alerts ---------------------------------------------
+  // One stream carries both delivery paths — the live WebSocket push and the
+  // replay of anything raised while the user was offline — so the UI has a
+  // single thing to listen to and cannot tell (or care) which it was.
+
+  BlockerSocket? _blockerSocket;
+  final StreamController<BlockerAlert> _blockerAlerts =
+      StreamController<BlockerAlert>.broadcast();
+
+  /// Alert ids already handed to the UI this session, so a replayed alert
+  /// that also arrives live is only shown once.
+  final Set<int> _deliveredBlockerIds = <int>{};
+
+  /// Blocker alerts for the signed-in user. The UI shows each as a modal that
+  /// stays up until acknowledged via [acknowledgeBlocker].
+  Stream<BlockerAlert> get blockerAlerts => _blockerAlerts.stream;
 
   bool get isAuthenticated => _tokens != null;
 
@@ -82,6 +102,86 @@ class AuthController extends ChangeNotifier {
     await _refreshIfExpiring();
     await api.logout(_requireTokens().accessToken);
     _clearTokens();
+  }
+
+  // --- Blockers -------------------------------------------------------------
+
+  /// Flags [taskId] as blocked on [responsibleUserId] and alerts them. The
+  /// server pushes it to their open tabs immediately and stores it so they
+  /// still see it if they are offline.
+  Future<Task> raiseBlocker({
+    required int taskId,
+    required int responsibleUserId,
+    required String message,
+  }) =>
+      _authorized((token) => data.raiseBlocker(
+            token: token,
+            taskId: taskId,
+            responsibleUserId: responsibleUserId,
+            message: message,
+          ));
+
+  /// Dismisses an alert so the server stops replaying it on reconnect.
+  Future<void> acknowledgeBlocker(int notificationId) => _authorized(
+        (token) => data.acknowledgeNotification(
+          token: token,
+          notificationId: notificationId,
+        ),
+      );
+
+  /// Opens the live channel and replays anything missed while offline. Safe
+  /// to call more than once — a socket is only created if there isn't one.
+  void _startBlockerChannel() {
+    if (_blockerSocket != null || _tokens == null) return;
+    final socket = BlockerSocket(
+      // Resolved per connect rather than captured, because the access token is
+      // short-lived and rotates; this routes through the same refresh logic
+      // every other call uses.
+      tokenProvider: () async {
+        await _refreshIfExpiring();
+        return _requireTokens().accessToken;
+      },
+    );
+    _blockerSocket = socket;
+    socket.alerts.listen(_emitBlocker);
+    socket.connect();
+    unawaited(_replayPendingBlockers());
+  }
+
+  /// Pulls blockers raised while this user had no tab open and feeds them
+  /// through the same stream as live pushes. Failure is non-fatal: they are
+  /// still in the notification list, and the next reconnect tries again.
+  Future<void> _replayPendingBlockers() async {
+    try {
+      for (final alert in await _authorized(data.pendingBlockers)) {
+        _emitBlocker(alert);
+      }
+    } catch (_) {
+      // Signed out mid-flight, endpoint unavailable, or the network dropped.
+      // Catch-all on purpose: this runs unawaited, so anything escaping here
+      // would surface as an unhandled zone error and take the app down. The
+      // alerts are still stored server-side and replay on the next connect.
+    }
+  }
+
+  void _emitBlocker(BlockerAlert alert) {
+    if (_blockerAlerts.isClosed) return;
+    // A replayed alert can race the live push of the same row; show it once.
+    if (!_deliveredBlockerIds.add(alert.id)) return;
+    _blockerAlerts.add(alert);
+  }
+
+  void _stopBlockerChannel() {
+    _blockerSocket?.dispose();
+    _blockerSocket = null;
+    _deliveredBlockerIds.clear();
+  }
+
+  @override
+  void dispose() {
+    _stopBlockerChannel();
+    _blockerAlerts.close();
+    super.dispose();
   }
 
   // --- Data (all Bearer-protected, routed through [_authorized]) ------------
@@ -326,6 +426,9 @@ class AuthController extends ChangeNotifier {
     // rotated refresh token (so [restore] can exchange it for a new access
     // token). The access token is short-lived and stays in memory only.
     _storage.write(user: tokens.user, refreshToken: tokens.refreshToken);
+    // Covers every way a session begins — sign-in, reload restore, and token
+    // refresh — and is a no-op once the channel is already open.
+    _startBlockerChannel();
     notifyListeners();
   }
 
@@ -333,6 +436,9 @@ class AuthController extends ChangeNotifier {
     _tokens = null;
     _accessExpiresAt = null;
     _storage.clear();
+    // Close the socket before the token goes, so it cannot try to reconnect
+    // with credentials that no longer exist.
+    _stopBlockerChannel();
     // Keep read-id state scoped to a signed-in session so a second account
     // signing in on the same page doesn't inherit the first user's "seen"
     // list.

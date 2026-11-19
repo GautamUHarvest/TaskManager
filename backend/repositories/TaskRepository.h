@@ -65,11 +65,33 @@ class TaskRepository
     std::int64_t countCommentDescendants(std::int64_t id);
 
     // --- Notifications ---
-    void createNotification(std::int64_t recipientId,
-                            std::int64_t actorId,
-                            std::int64_t taskId,
-                            const std::string &type,
-                            const std::string &message);
+    // Returns the stored row so a caller that needs to push it in real time
+    // has its id and created_at. Callers that only need the side effect can
+    // ignore the result.
+    NotificationRecord createNotification(std::int64_t recipientId,
+                                          std::int64_t actorId,
+                                          std::int64_t taskId,
+                                          const std::string &type,
+                                          const std::string &message);
+    // Unacknowledged blocker alerts for a recipient, oldest first, so the
+    // client can replay any it missed while offline.
+    std::vector<NotificationRecord> listPendingBlockers(
+        std::int64_t recipientId);
+    // Stamps read_at on a notification the recipient owns. False when the id
+    // does not exist or belongs to someone else; acknowledging one twice is
+    // not an error.
+    bool acknowledgeNotification(std::int64_t notificationId,
+                                 std::int64_t recipientId);
+
+    // --- Blockers ---
+    // Flags a task as blocked on `responsibleId` in one transaction: sets the
+    // status to 'blocked', bumps the version, records a 'blocked' event, and
+    // stores the notification for the responsible member.
+    BlockerRaised raiseBlocker(std::int64_t taskId,
+                               std::int64_t actorId,
+                               std::int64_t responsibleId,
+                               const std::string &eventDetail,
+                               const std::string &notificationMessage);
 
     // Returns the user ids assigned to a task.
     std::vector<std::int64_t> listAssigneeIds(std::int64_t taskId);
