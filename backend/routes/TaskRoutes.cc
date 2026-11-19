@@ -111,6 +111,7 @@ drogon::HttpResponsePtr corsPreflightResponse(
 
     response->setStatusCode(drogon::k204NoContent);
     response->addHeader("Access-Control-Allow-Origin", origin);
+    response->addHeader("Access-Control-Allow-Credentials", "true");
     response->addHeader("Access-Control-Allow-Methods", requestedMethod);
     response->addHeader("Access-Control-Allow-Headers",
                         "Authorization, Content-Type");

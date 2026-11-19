@@ -125,7 +125,11 @@ drogon::Cookie makeRefreshCookie(const std::string &value, int maxAge)
     cookie.setSecure(true);
     cookie.setPath(kRefreshCookiePath);
     cookie.setMaxAge(maxAge);
+<<<<<<< Updated upstream
     cookie.setSameSite(refreshCookieSameSite());
+=======
+    cookie.setSameSite(drogon::Cookie::SameSite::kStrict);
+>>>>>>> Stashed changes
     return cookie;
 }
 
