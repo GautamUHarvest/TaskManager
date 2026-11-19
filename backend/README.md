@@ -26,6 +26,7 @@ Set these environment variables before starting the backend:
 | `TASK_MANAGER_TLS_CERT` | yes | PEM certificate for the HTTPS listener |
 | `TASK_MANAGER_TLS_KEY` | yes | Matching private key; protect its file permissions |
 | `TASK_MANAGER_CORS_ORIGIN` | no | Exact browser origin allowed to call the auth API, e.g. `http://localhost:5000`; do not include a path or trailing slash |
+| `TASK_MANAGER_REFRESH_COOKIE_SAMESITE` | no | `SameSite` attribute on the refresh cookie. One of `Strict`, `Lax`, `None`; defaults to `Strict`. Use `None` when the frontend and backend are on different schemes (e.g. dev `http://localhost:5000` → `https://localhost:5555`), because Chrome's schemeful same-site treats them as cross-site and would silently drop the cookie |
 | `TASK_MANAGER_LISTEN_ADDRESS` | no | Listener address; defaults to `0.0.0.0` |
 | `TASK_MANAGER_PORT` | no | HTTPS port; defaults to `5555` |
 

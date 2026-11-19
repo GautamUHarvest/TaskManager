@@ -96,6 +96,28 @@ constexpr const char *kRefreshCookieName = "refresh_token";
 constexpr const char *kRefreshCookiePath = "/api/auth";
 constexpr int kRefreshCookieMaxAgeSeconds = 30 * 24 * 60 * 60;
 
+// SameSite for the refresh cookie. Default "Strict" is right for production
+// (frontend and backend served from one origin behind nginx). The dev setup
+// serves Flutter over http://localhost:5000 and the backend over
+// https://localhost:5555 — Chrome's schemeful same-site treats those as
+// cross-site, which makes Strict/Lax drop the cookie silently. Set
+// TASK_MANAGER_REFRESH_COOKIE_SAMESITE=None for that case (we already set
+// Secure, which None requires).
+std::string refreshCookieSameSite()
+{
+    const char *value = std::getenv("TASK_MANAGER_REFRESH_COOKIE_SAMESITE");
+    if (!value || value[0] == '\0')
+    {
+        return "Strict";
+    }
+    const std::string text(value);
+    if (text == "Strict" || text == "Lax" || text == "None")
+    {
+        return text;
+    }
+    return "Strict";
+}
+
 drogon::Cookie makeRefreshCookie(const std::string &value, int maxAge)
 {
     drogon::Cookie cookie(kRefreshCookieName, value);
@@ -103,7 +125,7 @@ drogon::Cookie makeRefreshCookie(const std::string &value, int maxAge)
     cookie.setSecure(true);
     cookie.setPath(kRefreshCookiePath);
     cookie.setMaxAge(maxAge);
-    cookie.setSameSite("Strict");
+    cookie.setSameSite(refreshCookieSameSite());
     return cookie;
 }
 

@@ -18,5 +18,11 @@ export TASK_MANAGER_TLS_CERT="${TASK_MANAGER_TLS_CERT:-$backend_dir/dev-cert.pem
 export TASK_MANAGER_TLS_KEY="${TASK_MANAGER_TLS_KEY:-$backend_dir/dev-key.pem}"
 export TASK_MANAGER_DATABASE_PATH="${TASK_MANAGER_DATABASE_PATH:-$backend_dir/task_manager.sqlite3}"
 export TASK_MANAGER_CORS_ORIGIN="${TASK_MANAGER_CORS_ORIGIN:-http://localhost:5000}"
+# Dev frontend is http://localhost:5000, backend is https://localhost:5555.
+# Different scheme → Chrome's schemeful same-site treats them as cross-site,
+# which makes a SameSite=Strict/Lax refresh cookie silently fail to store or
+# send. SameSite=None (with Secure, which we already set) works for this
+# cross-scheme dev setup. Production should leave this unset (Strict default).
+export TASK_MANAGER_REFRESH_COOKIE_SAMESITE="${TASK_MANAGER_REFRESH_COOKIE_SAMESITE:-None}"
 
 exec "$backend_dir/build/TaskManagerBackend" "$@"
