@@ -58,6 +58,7 @@ void addCorsHeaders(const drogon::HttpRequestPtr &request,
     }
 
     response->addHeader("Access-Control-Allow-Origin", origin);
+    response->addHeader("Access-Control-Allow-Credentials", "true");
     response->addHeader("Vary", "Origin");
 }
 }  // namespace

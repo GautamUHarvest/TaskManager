@@ -59,6 +59,27 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
         subtasks: current.subtasks,
         // Notes come back oldest-first, so append.
         notes: [...current.notes, note],
+        comments: current.comments,
+      );
+    });
+  }
+
+  /// Same idea as [_insertNote] for a freshly posted comment or reply: the
+  /// composer's "post" await completes before the next /task/detail round-
+  /// trip finishes, and users expect their message to appear instantly. The
+  /// subsequent reload reconciles against the server's canonical copy.
+  void _insertComment(TaskComment comment) {
+    final current = _lastLoaded;
+    if (current == null) return;
+    setState(() {
+      _lastLoaded = TaskDetail(
+        task: current.task,
+        subtasks: current.subtasks,
+        notes: current.notes,
+        // Comments are returned flat oldest-first; the nested _CommentsSection
+        // builds the tree from parent_comment_id, so a simple append slots a
+        // reply into the right thread automatically.
+        comments: [...current.comments, comment],
       );
     });
   }
@@ -255,7 +276,13 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                           controller: widget.controller,
                           currentUserId: _myId,
                           authorLabel: _userLabel,
-                          onCommentPosted: _reload,
+                          onCommentPosted: (posted) {
+                            // Show the new comment in place right away…
+                            _insertComment(posted);
+                            // …then fetch the server's canonical copy so the
+                            // ids/timestamps reconcile.
+                            _reload();
+                          },
                         ),
                       ],
                     ),
@@ -704,7 +731,9 @@ class _CommentsSection extends StatefulWidget {
   final AuthController controller;
   final int? currentUserId;
   final String Function(int?) authorLabel;
-  final VoidCallback onCommentPosted;
+  /// Called with the comment the server just created so the parent can
+  /// insert it optimistically and then reload.
+  final ValueChanged<TaskComment> onCommentPosted;
 
   @override
   State<_CommentsSection> createState() => _CommentsSectionState();
@@ -732,12 +761,12 @@ class _CommentsSectionState extends State<_CommentsSection> {
   /// keeps the typed text for a retry.
   Future<bool> _post({required String body, int? parentCommentId}) async {
     try {
-      await widget.controller.addComment(
+      final posted = await widget.controller.addComment(
         taskId: widget.taskId,
         body: body,
         parentCommentId: parentCommentId,
       );
-      widget.onCommentPosted();
+      widget.onCommentPosted(posted);
       return true;
     } catch (error) {
       if (!mounted) return false;

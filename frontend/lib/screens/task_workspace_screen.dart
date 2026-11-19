@@ -1294,7 +1294,13 @@ class _NotificationsDialogState extends State<_NotificationsDialog> {
   @override
   void initState() {
     super.initState();
-    _future = widget.controller.notifications();
+    // Once the dialog has fetched the notifications, flag the ids as seen so
+    // they drop off subsequent reads / badge counts.
+    _future = widget.controller.notifications().then((items) {
+      widget.controller
+          .markNotificationsRead(items.map((item) => item.id));
+      return items;
+    });
   }
 
   @override
@@ -1466,6 +1472,17 @@ class _AssigneePickerField extends StatelessWidget {
   final List<int> selectedIds;
   final ValueChanged<List<int>> onChanged;
 
+  /// Human-friendly label for a user. Falls back through display name →
+  /// employee id → email → "User #id" so there is always something to show
+  /// even when the server left a field blank.
+  static String _nameFor(AuthUser user) {
+    final name = user.displayName.trim();
+    if (name.isNotEmpty) return name;
+    if (user.employeeId.isNotEmpty) return user.employeeId;
+    if (user.email.isNotEmpty) return user.email;
+    return 'User #${user.id}';
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -1482,6 +1499,15 @@ class _AssigneePickerField extends StatelessWidget {
       if (selectedIds.contains(userId)) return;
       onChanged([...selectedIds, userId]);
     }
+
+    // When the roster hasn't arrived yet (initial load, network blip) say so
+    // instead of pretending nobody is addable.
+    final rosterEmpty = users.isEmpty;
+    final addLabel = rosterEmpty
+        ? 'Loading teammates…'
+        : remaining.isEmpty
+            ? 'Everyone added'
+            : 'Add teammate';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1510,31 +1536,90 @@ class _AssigneePickerField extends StatelessWidget {
                 ),
               for (final id in selectedIds)
                 InputChip(
-                  label: Text(userById[id]?.displayName ?? 'User #$id'),
+                  label: Text(
+                    userById[id] == null
+                        ? 'User #$id'
+                        : _nameFor(userById[id]!),
+                  ),
                   onDeleted: () => removeAt(id),
                 ),
             ],
           ),
         ),
         const SizedBox(height: 8),
+        // PopupMenuButton with its own child — no inner button, since an
+        // inner button would swallow the tap before PopupMenuButton saw it
+        // and the menu would never open.
         Align(
           alignment: Alignment.centerLeft,
           child: PopupMenuButton<int>(
             enabled: remaining.isNotEmpty,
             onSelected: addId,
+            tooltip: addLabel,
             itemBuilder: (context) => [
               for (final user in remaining)
                 PopupMenuItem<int>(
                   value: user.id,
-                  child: Text('${user.displayName} · ${user.employeeId}'),
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 12,
+                        backgroundColor: theme.colorScheme.primaryContainer,
+                        foregroundColor:
+                            theme.colorScheme.onPrimaryContainer,
+                        child: Text(
+                          _nameFor(user)[0].toUpperCase(),
+                          style: theme.textTheme.labelSmall,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Flexible(
+                        child: Text(
+                          user.employeeId.isEmpty
+                              ? _nameFor(user)
+                              : '${_nameFor(user)} · ${user.employeeId}',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
             ],
-            child: OutlinedButton.icon(
-              // The button itself is decorative: taps bubble up to the menu.
-              onPressed: remaining.isEmpty ? null : () {},
-              icon: const Icon(Icons.person_add_alt_1, size: 18),
-              label: Text(
-                remaining.isEmpty ? 'Everyone added' : 'Add teammate',
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: remaining.isEmpty
+                      ? theme.colorScheme.outlineVariant
+                      : theme.colorScheme.outline,
+                ),
+                color: remaining.isEmpty
+                    ? theme.colorScheme.surfaceContainerHighest
+                        .withValues(alpha: 0.3)
+                    : null,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.person_add_alt_1,
+                    size: 18,
+                    color: remaining.isEmpty
+                        ? theme.colorScheme.onSurfaceVariant
+                        : theme.colorScheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    addLabel,
+                    style: theme.textTheme.labelLarge?.copyWith(
+                      color: remaining.isEmpty
+                          ? theme.colorScheme.onSurfaceVariant
+                          : theme.colorScheme.primary,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),

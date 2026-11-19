@@ -3,21 +3,62 @@ import 'package:flutter/foundation.dart';
 import '../tasks/data_api.dart';
 import '../tasks/task_models.dart';
 import 'auth_api.dart';
+import 'token_storage.dart';
 
 class AuthController extends ChangeNotifier {
-  AuthController(this.api, {DataApi? data}) : data = data ?? DataApi();
+  AuthController(
+    this.api, {
+    DataApi? data,
+    TokenStorage? storage,
+  })  : data = data ?? DataApi(),
+        _storage = storage ?? TokenStorage();
 
   final AuthApi api;
   final DataApi data;
+  final TokenStorage _storage;
 
   AuthTokens? _tokens;
   DateTime? _accessExpiresAt;
+  bool _restoring = false;
+
+  /// Ids the current session has already shown the user. Kept in memory so
+  /// once a notification has been seen it stops reappearing in the bell /
+  /// dialog on subsequent refreshes within this session (reload clears it,
+  /// matching the rest of this app's in-memory-only session model).
+  final Set<int> _readNotificationIds = <int>{};
 
   bool get isAuthenticated => _tokens != null;
+
+  /// True while the controller is swapping a persisted refresh token for a
+  /// live access token on app boot. The UI shows a brief splash rather than
+  /// the signed-out screen so a reload doesn't flash the login page.
+  bool get isRestoring => _restoring;
 
   /// The signed-in user (from the login/refresh payload), or null when signed
   /// out. Used to label "assigned to you" and to default the assignee picker.
   AuthUser? get currentUser => _tokens?.user;
+
+  /// Tries to resurrect a prior session on app boot. The refresh token lives
+  /// in an HttpOnly cookie we cannot read — we just ask the server to rotate
+  /// it; if the cookie is still valid we get a new access token (and a fresh
+  /// cookie) back, and if it isn't the server answers 401 and we fall through
+  /// to the sign-in screen. A locally cached user (if any) lets the shell
+  /// paint immediately instead of flashing the login page during the refresh
+  /// round-trip.
+  Future<void> restore() async {
+    final cached = _storage.read();
+    if (cached == null) return;
+    _restoring = true;
+    notifyListeners();
+    try {
+      _setTokens(await api.refresh());
+    } on AuthApiException {
+      _storage.clear();
+    } finally {
+      _restoring = false;
+      notifyListeners();
+    }
+  }
 
   Future<void> register({
     required String employeeId,
@@ -54,8 +95,26 @@ class AuthController extends ChangeNotifier {
 
   Future<List<AuthUser>> allUsers() => _authorized(data.allUsers);
 
-  Future<List<AppNotification>> notifications() =>
-      _authorized(data.notifications);
+  /// Notifications the user has not yet dismissed. Server-returned items
+  /// whose ids are in [_readNotificationIds] (dismissed earlier this session)
+  /// are filtered out so a read notification doesn't keep reappearing.
+  Future<List<AppNotification>> notifications() async {
+    final items = await _authorized(data.notifications);
+    return items
+        .where((item) => !_readNotificationIds.contains(item.id))
+        .toList(growable: false);
+  }
+
+  /// Mark [ids] as read for this session. Called by the notifications dialog
+  /// when the user opens it (the act of opening the panel counts as seeing
+  /// the items it shows). Notifies listeners so the bell badge updates.
+  void markNotificationsRead(Iterable<int> ids) {
+    final before = _readNotificationIds.length;
+    _readNotificationIds.addAll(ids);
+    if (_readNotificationIds.length != before) {
+      notifyListeners();
+    }
+  }
 
   Future<Task> createTask({
     required String title,
@@ -176,8 +235,19 @@ class AuthController extends ChangeNotifier {
   }
 
   Future<void> _refresh() async {
-    final current = _requireTokens();
-    _setTokens(await api.refresh(current.refreshToken));
+    _requireTokens();
+    try {
+      _setTokens(await api.refresh());
+    } on AuthApiException catch (error) {
+      // A 401 here means the HttpOnly refresh cookie is dead (expired or
+      // already rotated by another tab). Wipe memory state so the UI falls
+      // back to the sign-in screen cleanly instead of looping on a bad
+      // credential. The server has already cleared / refused the cookie.
+      if (error.statusCode == 401) {
+        _clearTokens();
+      }
+      rethrow;
+    }
   }
 
   AuthTokens _requireTokens() {
@@ -191,12 +261,22 @@ class AuthController extends ChangeNotifier {
   void _setTokens(AuthTokens tokens) {
     _tokens = tokens;
     _accessExpiresAt = DateTime.now().add(Duration(seconds: tokens.expiresIn));
+    // Cache the user so the next page load can paint the signed-in shell
+    // immediately while [restore] calls /auth/refresh in the background. The
+    // refresh token itself lives in an HttpOnly cookie we cannot touch, and
+    // the access token is short-lived — neither is persisted here.
+    _storage.write(user: tokens.user);
     notifyListeners();
   }
 
   void _clearTokens() {
     _tokens = null;
     _accessExpiresAt = null;
+    _storage.clear();
+    // Keep read-id state scoped to a signed-in session so a second account
+    // signing in on the same page doesn't inherit the first user's "seen"
+    // list.
+    _readNotificationIds.clear();
     notifyListeners();
   }
 }

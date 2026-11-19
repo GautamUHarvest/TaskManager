@@ -9,14 +9,29 @@ import 'tasks/data_api.dart';
 
 void main() {
   final client = ApiClient();
-  runApp(
-    TaskManagerApp(
-      controller: AuthController(
-        AuthApi(client: client),
-        data: DataApi(client: client),
-      ),
-    ),
+  final controller = AuthController(
+    AuthApi(client: client),
+    data: DataApi(client: client),
   );
+  // Fire and forget — the UI listens via AnimatedBuilder and shows a splash
+  // while `isRestoring` is true, then flips to the signed-in shell if the
+  // persisted refresh token swapped cleanly, or the sign-in screen if not.
+  controller.restore();
+  runApp(TaskManagerApp(controller: controller));
+}
+
+/// Shown for the brief moment between app launch and the restore-refresh
+/// completing. Keeps the reload from flashing the sign-in screen when the
+/// user actually has a valid persisted session.
+class _RestoreSplash extends StatelessWidget {
+  const _RestoreSplash();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      body: Center(child: CircularProgressIndicator()),
+    );
+  }
 }
 
 class TaskManagerApp extends StatelessWidget {
@@ -47,9 +62,14 @@ class TaskManagerApp extends StatelessWidget {
       ),
       home: AnimatedBuilder(
         animation: controller,
-        builder: (context, _) => controller.isAuthenticated
-            ? TaskWorkspaceScreen(controller: controller)
-            : AuthScreen(controller: controller),
+        builder: (context, _) {
+          if (controller.isRestoring) {
+            return const _RestoreSplash();
+          }
+          return controller.isAuthenticated
+              ? TaskWorkspaceScreen(controller: controller)
+              : AuthScreen(controller: controller);
+        },
       ),
     );
   }

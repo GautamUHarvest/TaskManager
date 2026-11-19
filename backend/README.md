@@ -87,9 +87,9 @@ All routes use JSON except authenticated requests, which use the
 | Method and path | Request fields | Result |
 | --- | --- | --- |
 | `POST /api/auth/register` | `employee_id`, `email`, `display_name`, `password` | Creates an active account immediately; sign in with its employee ID or email and password |
-| `POST /api/auth/login` | `login` (employee ID or email), `password` | Returns access and refresh tokens |
-| `POST /api/auth/refresh` | `refresh_token` | Rotates the refresh token and issues a new access token |
-| `POST /api/auth/logout` | Bearer access token | Revokes its refresh session; any issued access token expires within 10 minutes |
+| `POST /api/auth/login` | `login` (employee ID or email), `password` | Returns the access token in the JSON body and sets the refresh token as an HttpOnly cookie |
+| `POST /api/auth/refresh` | _(no body; the `refresh_token` HttpOnly cookie is the credential)_ | Rotates the refresh cookie and issues a new access token |
+| `POST /api/auth/logout` | Bearer access token | Revokes its refresh session, clears the refresh cookie; any issued access token expires within 10 minutes |
 | `GET /api/auth/me` | Bearer access token | Returns the authenticated user's profile |
 
 Passwords currently enforce the requested six-character minimum, uppercase,
@@ -104,6 +104,18 @@ multiple backend instances; run one backend process with this SQLite database.
 Registration no longer requires email verification. Existing accounts awaiting
 verification are activated by migration `003_disable_email_verification.sql`.
 
-Flutter clients should keep access tokens in memory and store refresh tokens
-only in platform secure storage (Android Keystore-backed storage or Apple
-Keychain). Do not put bearer tokens in URLs or application logs.
+Refresh tokens are issued **only** as an `HttpOnly; Secure; SameSite=Strict;
+Path=/api/auth` cookie named `refresh_token`. They are not in the JSON body
+and JavaScript cannot read them. `POST /api/auth/login` and
+`POST /api/auth/refresh` set a fresh cookie (the server rotates the token on
+every call and overwrites the cookie with the replacement);
+`POST /api/auth/logout` clears it. Browser clients must opt into sending
+cookies (`credentials: 'include'` on `fetch`, `withCredentials = true` on XHR,
+`BrowserClient()..withCredentials = true` on Flutter Web); native clients
+must send and persist the cookie themselves. Keep access tokens in memory
+only and never put bearer tokens in URLs or application logs.
+
+Because cookies are credentials, CORS responses include
+`Access-Control-Allow-Credentials: true` and the allowlisted origin must be
+exact — wildcard origins are refused by the browser when credentials are in
+play. Set `TASK_MANAGER_CORS_ORIGIN` to the single frontend origin.

@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:http/browser_client.dart';
 import 'package:http/http.dart' as http;
 
 /// Base URL baked in at build time via `--dart-define=API_BASE_URL=...`.
@@ -51,9 +52,15 @@ Map<String, dynamic> decodeApiResponse(http.Response response) {
 
 /// Thin HTTP layer shared by [AuthApi] and the data APIs. Handles the base
 /// URL, JSON encoding, optional Bearer auth, and error decoding in one place.
+///
+/// Default client is a [BrowserClient] with `withCredentials = true` so the
+/// browser sends and accepts the HttpOnly `refresh_token` cookie on
+/// `/api/auth/*` requests. Without this, cross-origin dev
+/// (`http://localhost:5000` → `https://localhost:5555`) would silently drop
+/// the cookie and refresh would fail with 401.
 class ApiClient {
   ApiClient({http.Client? client, String? baseUrl})
-      : _client = client ?? http.Client(),
+      : _client = client ?? (BrowserClient()..withCredentials = true),
         _baseUrl = normalizeBaseUrl(baseUrl);
 
   final http.Client _client;

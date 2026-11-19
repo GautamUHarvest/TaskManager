@@ -78,15 +78,55 @@ Json::Value userJson(const UserRecord &user)
     return body;
 }
 
+// Response body for login/refresh. The refresh token is NOT in the body;
+// it is delivered to the browser in an HttpOnly, Secure, SameSite=Strict
+// cookie scoped to /api/auth, so JavaScript cannot read it and it is only
+// ever sent back on auth endpoints.
 Json::Value tokensJson(const AuthTokens &tokens)
 {
     Json::Value body;
     body["access_token"] = tokens.accessToken;
-    body["refresh_token"] = tokens.refreshToken;
     body["token_type"] = "Bearer";
     body["expires_in"] = Json::Int64(tokens.accessExpiresIn);
     body["user"] = userJson(tokens.user);
     return body;
+}
+
+constexpr const char *kRefreshCookieName = "refresh_token";
+constexpr const char *kRefreshCookiePath = "/api/auth";
+constexpr int kRefreshCookieMaxAgeSeconds = 30 * 24 * 60 * 60;
+
+drogon::Cookie makeRefreshCookie(const std::string &value, int maxAge)
+{
+    drogon::Cookie cookie(kRefreshCookieName, value);
+    cookie.setHttpOnly(true);
+    cookie.setSecure(true);
+    cookie.setPath(kRefreshCookiePath);
+    cookie.setMaxAge(maxAge);
+    cookie.setSameSite("Strict");
+    return cookie;
+}
+
+void setRefreshCookie(const drogon::HttpResponsePtr &response,
+                      const std::string &value)
+{
+    response->addCookie(makeRefreshCookie(value, kRefreshCookieMaxAgeSeconds));
+}
+
+void clearRefreshCookie(const drogon::HttpResponsePtr &response)
+{
+    // Overwrite with an empty, immediately expired cookie at the same path.
+    response->addCookie(makeRefreshCookie(std::string(), 0));
+}
+
+std::string requiredRefreshCookie(const drogon::HttpRequestPtr &request)
+{
+    const auto &value = request->getCookie(kRefreshCookieName);
+    if (value.empty())
+    {
+        throw UnauthorizedError("Missing refresh token");
+    }
+    return value;
 }
 
 void requireRateLimit(const drogon::HttpRequestPtr &request,
@@ -188,24 +228,29 @@ void AuthController::login(const drogon::HttpRequestPtr &request,
     run(request,
         std::move(callback),
         [this, body]() {
-            return jsonResponse(
-                drogon::k200OK,
-                tokensJson(service_.login(requiredString(body, "login"),
-                                          requiredString(body, "password"))));
+            const auto tokens =
+                service_.login(requiredString(body, "login"),
+                               requiredString(body, "password"));
+            auto response = jsonResponse(drogon::k200OK, tokensJson(tokens));
+            setRefreshCookie(response, tokens.refreshToken);
+            return response;
         });
 }
 
 void AuthController::refresh(const drogon::HttpRequestPtr &request,
                              drogon::AdviceCallback &&callback)
 {
-    const auto body = requiredBody(request);
+    // The refresh token is the HttpOnly cookie set on login; no request body.
+    // AuthService::refresh rotates the token on every call, and we overwrite
+    // the cookie with the new one so each refresh issues a fresh credential.
+    const auto cookieToken = requiredRefreshCookie(request);
     run(request,
         std::move(callback),
-        [this, body]() {
-            return jsonResponse(
-                drogon::k200OK,
-                tokensJson(
-                    service_.refresh(requiredString(body, "refresh_token"))));
+        [this, cookieToken]() {
+            const auto tokens = service_.refresh(cookieToken);
+            auto response = jsonResponse(drogon::k200OK, tokensJson(tokens));
+            setRefreshCookie(response, tokens.refreshToken);
+            return response;
         });
 }
 
@@ -220,6 +265,7 @@ void AuthController::logout(const drogon::HttpRequestPtr &request,
             auto response = drogon::HttpResponse::newHttpResponse();
             response->setStatusCode(drogon::k204NoContent);
             response->addHeader("Cache-Control", "no-store");
+            clearRefreshCookie(response);
             return response;
         });
 }
