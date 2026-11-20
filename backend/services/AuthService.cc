@@ -1,5 +1,7 @@
 #include "AuthService.h"
 
+#include "../common/Text.h"
+
 #include <algorithm>
 #include <cctype>
 #include <ctime>
@@ -8,6 +10,9 @@
 
 namespace taskmanager
 {
+using text::lowercase;
+using text::trim;
+
 namespace
 {
 constexpr std::int64_t kRefreshLifetimeSeconds = 30 * 24 * 60 * 60;
@@ -16,25 +21,6 @@ constexpr std::int64_t kAccessLifetimeSeconds = 10 * 60;
 std::int64_t nowSeconds()
 {
     return static_cast<std::int64_t>(std::time(nullptr));
-}
-
-std::string lowercase(std::string value)
-{
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return value;
-}
-
-std::string trim(std::string value)
-{
-    auto first = std::find_if_not(value.begin(), value.end(), [](unsigned char c) {
-        return std::isspace(c) != 0;
-    });
-    auto last = std::find_if_not(value.rbegin(), value.rend(), [](unsigned char c) {
-                    return std::isspace(c) != 0;
-                }).base();
-    return first < last ? std::string(first, last) : std::string();
 }
 
 struct ParsedRefreshToken

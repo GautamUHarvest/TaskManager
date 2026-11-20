@@ -1,19 +1,10 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.13)
 project(TaskManagerBackend_test CXX)
 
-add_executable(${PROJECT_NAME} test_main.cc)
-
-# ##############################################################################
-# If you include the drogon source code locally in your project, use this method
-# to add drogon 
-# target_link_libraries(${PROJECT_NAME} PRIVATE drogon)
-#
-# and comment out the following lines
-target_link_libraries(${PROJECT_NAME} PRIVATE Drogon::Drogon)
-find_package(OpenSSL REQUIRED)
-target_link_libraries(${PROJECT_NAME} PRIVATE OpenSSL::Crypto)
-target_sources(${PROJECT_NAME} PRIVATE ../security/AuthCrypto.cc)
-target_include_directories(${PROJECT_NAME} PRIVATE .. ../security)
-add_test(NAME TaskManagerBackend_auth_tests COMMAND ${PROJECT_NAME})
+# Every *.cc here is a test translation unit; test_main.cc holds main().
+file(GLOB TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cc")
+add_executable(${PROJECT_NAME} ${TEST_SOURCES})
+target_link_libraries(${PROJECT_NAME} PRIVATE taskmanager_core)
+add_test(NAME TaskManagerBackend_tests COMMAND ${PROJECT_NAME})
 
 ParseAndAddDrogonTests(${PROJECT_NAME})

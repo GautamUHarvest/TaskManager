@@ -46,6 +46,23 @@ struct TaskRecord
     std::string updatedAt;
 };
 
+// Task fields exactly as the client sent them, before validation. The service
+// layer trims, applies defaults and checks enums, producing a NewTask.
+struct TaskInput
+{
+    std::string title;
+    std::optional<std::string> description;
+    std::optional<std::string> status;
+    std::optional<std::string> type;
+    std::optional<std::string> discipline;
+    std::optional<std::string> dueAt;
+    std::optional<std::string> startAt;
+    std::vector<std::int64_t> assigneeIds;
+    std::optional<std::int64_t> parentTaskId;
+    std::optional<std::int64_t> projectId;
+};
+
+// A validated task ready to insert.
 struct NewTask
 {
     std::int64_t createdById;

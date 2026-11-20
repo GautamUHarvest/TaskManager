@@ -20,8 +20,8 @@ class AuthService;
 //
 // A singleton because Drogon constructs WebSocketController instances itself,
 // so there is nowhere to inject dependencies; main.cc calls configure() at
-// startup to hand it the AuthService. Like the IP rate limiter in
-// AuthController, this state is per-process and therefore assumes a single
+// startup to hand it the AuthService. Like security::RateLimiter, this
+// state is per-process and therefore assumes a single
 // backend process — the same assumption the SQLite setup already makes.
 //
 // Delivery is best-effort by design: a user with no live socket simply gets

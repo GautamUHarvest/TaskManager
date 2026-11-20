@@ -1,33 +1,25 @@
 #pragma once
 
+#include "../common/Errors.h"
+#include "../db/Sqlite.h"
 #include "../models/User.h"
 
 #include <cstdint>
 #include <optional>
-#include <stdexcept>
 #include <string>
 
 namespace taskmanager
 {
 
-class DuplicateUserError : public std::runtime_error
-{
-  public:
-    using std::runtime_error::runtime_error;
-};
-
-class UserLimitError : public std::runtime_error
-{
-  public:
-    using std::runtime_error::runtime_error;
-};
-
+// Accounts and refresh-token sessions. Schema setup is not done here — see
+// db::initializeDatabase, which must run first.
 class AuthRepository
 {
   public:
-    AuthRepository(std::string databasePath, std::string migrationsPath);
+    explicit AuthRepository(const db::Database &database);
 
-    void initialize();
+    // Throws DuplicateUserError when the employee ID or email is taken (or
+    // the email fails the domain trigger), UserLimitError at 25 active users.
     std::int64_t createUser(const std::string &employeeId,
                             const std::string &email,
                             const std::string &displayName,
@@ -47,8 +39,7 @@ class AuthRepository
     bool revokeSession(const std::string &sessionId, std::int64_t userId);
 
   private:
-    std::string databasePath_;
-    std::string migrationsPath_;
+    const db::Database &database_;
 };
 
 }  // namespace taskmanager

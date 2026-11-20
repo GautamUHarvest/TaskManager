@@ -1,114 +1,119 @@
 #include <drogon/drogon.h>
 #include <trantor/utils/ConcurrentTaskQueue.h>
 
+#include "config/AppConfig.h"
 #include "controllers/AuthController.h"
+#include "controllers/CommentController.h"
+#include "controllers/NoteController.h"
+#include "controllers/NotificationController.h"
+#include "controllers/ProjectController.h"
 #include "controllers/TaskController.h"
+#include "controllers/UserController.h"
+#include "db/Migrations.h"
+#include "db/Sqlite.h"
 #include "error_middleware/ErrorMiddleware.h"
+#include "http/Dispatcher.h"
+#include "http/Router.h"
 #include "repositories/AuthRepository.h"
+#include "repositories/CommentRepository.h"
+#include "repositories/NoteRepository.h"
+#include "repositories/NotificationRepository.h"
+#include "repositories/ProjectRepository.h"
 #include "repositories/TaskRepository.h"
-#include "routes/AuthRoutes.h"
-#include "routes/TaskRoutes.h"
+#include "repositories/UserRepository.h"
+#include "routes/ApiRoutes.h"
 #include "services/AuthService.h"
 #include "services/BlockerHub.h"
+#include "services/CommentService.h"
+#include "services/NoteService.h"
+#include "services/NotificationService.h"
+#include "services/ProjectService.h"
 #include "services/TaskService.h"
+#include "services/UserService.h"
 
-#include <cstdlib>
 #include <memory>
-#include <stdexcept>
-#include <string>
 #include <sys/stat.h>
 
-namespace
-{
-std::string requiredEnvironment(const char *name)
-{
-    const char *value = std::getenv(name);
-    if (!value || value[0] == '\0')
-    {
-        throw std::runtime_error(std::string(name) + " must be configured");
-    }
-    return value;
-}
-
-std::string environmentOr(const char *name, const std::string &fallback)
-{
-    const char *value = std::getenv(name);
-    return value && value[0] != '\0' ? value : fallback;
-}
-
-}  // namespace
-
+// Composition root: builds every layer by hand (no Drogon codegen, no DI
+// container) — config -> database -> repositories -> services -> controllers
+// -> routes. Everything here lives for the whole process.
 int main()
 {
+    using namespace taskmanager;
     try
     {
         umask(S_IRWXG | S_IRWXO);
-        const auto address = environmentOr(
-            "TASK_MANAGER_LISTEN_ADDRESS", "0.0.0.0");
+        const auto config = AppConfig::fromEnvironment();
 
-        const auto databasePath = environmentOr(
-            "TASK_MANAGER_DATABASE_PATH", "task_manager.sqlite3");
-            
-        const auto migrationsPath = environmentOr(
-            "TASK_MANAGER_MIGRATIONS_DIR", TASK_MANAGER_MIGRATIONS_DIR);
+        db::initializeDatabase(config.databasePath, config.migrationsDir);
+        const db::Database database(config.databasePath);
 
-        taskmanager::AuthRepository repository(
-            databasePath, migrationsPath);
-        repository.initialize();
+        AuthRepository authRepository(database);
+        UserRepository userRepository(database);
+        ProjectRepository projectRepository(database);
+        TaskRepository taskRepository(database);
+        NoteRepository noteRepository(database);
+        CommentRepository commentRepository(database);
+        NotificationRepository notificationRepository(database);
 
-        taskmanager::AuthService auth(
-            repository, requiredEnvironment("TASK_MANAGER_JWT_SECRET"));
-        trantor::ConcurrentTaskQueue authWorkers(2, "auth-workers");
-        // Hand the notification hub the AuthService, so WebSocket clients can
-        // authenticate with the same access tokens the REST API issues, and
-        // the worker queue, so that token check (which reads SQLite) stays off
-        // the event loop. BlockerSocketController registers its own route —
-        // Drogon has no non-macro WebSocket registration — so there is nothing
-        // else to wire.
-        taskmanager::BlockerHub::instance().configure(&auth, &authWorkers);
-        drogon::app().registerMiddleware(
-            std::make_shared<taskmanager::ErrorMiddleware>());
-        auto authController =
-            std::make_shared<taskmanager::AuthController>(auth, authWorkers);
-        taskmanager::registerAuthRoutes(authController);
+        AuthService authService(authRepository, config.jwtSecret);
+        UserService userService(userRepository);
+        ProjectService projectService(projectRepository);
+        TaskService taskService(taskRepository,
+                                projectRepository,
+                                userRepository,
+                                noteRepository,
+                                commentRepository);
+        NoteService noteService(noteRepository);
+        CommentService commentService(
+            commentRepository, taskRepository, notificationRepository);
+        NotificationService notificationService(notificationRepository);
 
-        taskmanager::TaskRepository taskRepository(databasePath);
-        taskmanager::TaskService taskService(auth, taskRepository);
-        auto taskController =
-            std::make_shared<taskmanager::TaskController>(taskService,
-                                                          authWorkers);
-        taskmanager::registerTaskRoutes(taskController);
-        drogon::app().setExceptionHandler(
-            [](const std::exception &error,
-               const drogon::HttpRequestPtr &request,
-               drogon::AdviceCallback &&callback) {
-                taskmanager::ErrorMiddleware::handleException(
-                    error, request, std::move(callback));
+        // All blocking work (scrypt, SQLite) runs here, never on the event
+        // loop. The name predates the task endpoints; it serves all of them.
+        trantor::ConcurrentTaskQueue workers(2, "auth-workers");
+        const http::Dispatcher dispatcher(authService, workers);
+
+        // The WebSocket controller is constructed by Drogon itself, so its
+        // dependencies are handed over through the hub instead. Token checks
+        // read SQLite, so they go to the same worker queue.
+        BlockerHub::instance().configure(&authService, &workers);
+
+        auto &app = drogon::app();
+        app.registerMiddleware(std::make_shared<ErrorMiddleware>());
+
+        http::Router router(app);
+        registerApiRoutes(
+            router,
+            ApiControllers{
+                std::make_shared<AuthController>(authService, dispatcher),
+                std::make_shared<TaskController>(taskService, dispatcher),
+                std::make_shared<ProjectController>(projectService, dispatcher),
+                std::make_shared<NoteController>(noteService, dispatcher),
+                std::make_shared<CommentController>(commentService, dispatcher),
+                std::make_shared<NotificationController>(notificationService,
+                                                         dispatcher),
+                std::make_shared<UserController>(userService, dispatcher)});
+
+        // Exceptions thrown outside the middleware chain, and unknown routes,
+        // get the same error shape as everything else.
+        app.setExceptionHandler([](const std::exception &error,
+                                   const drogon::HttpRequestPtr &request,
+                                   drogon::AdviceCallback &&callback) {
+            ErrorMiddleware::handleException(error, request, std::move(callback));
+        });
+        app.setDefaultHandler(
+            [](const drogon::HttpRequestPtr &, drogon::AdviceCallback &&callback) {
+                callback(ErrorMiddleware::notFoundResponse());
             });
-        drogon::app().setDefaultHandler(
-            [](const drogon::HttpRequestPtr &,
-               drogon::AdviceCallback &&callback) {
-                callback(taskmanager::ErrorMiddleware::notFoundResponse());
-            });
 
-        const auto certificate = requiredEnvironment("TASK_MANAGER_TLS_CERT");
-        const auto privateKey = requiredEnvironment("TASK_MANAGER_TLS_KEY");
-        const auto portText = environmentOr("TASK_MANAGER_PORT", "5555");
-        std::size_t parsed = 0;
-        const auto port = std::stoul(portText, &parsed);
-        if (parsed != portText.size() || port == 0 || port > 65535)
-        {
-            throw std::runtime_error("TASK_MANAGER_PORT must be 1 to 65535");
-        }
-
-        drogon::app()
-            .addListener(address,
-                         static_cast<uint16_t>(port),
-                         true,
-                         certificate,
-                         privateKey)
+        app.addListener(config.listenAddress,
+                        config.port,
+                        true,
+                        config.tlsCertificate,
+                        config.tlsPrivateKey)
             .run();
-        authWorkers.stop();
+        workers.stop();
     }
     catch (const std::exception &error)
     {

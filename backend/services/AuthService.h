@@ -1,10 +1,10 @@
 #pragma once
 
+#include "../common/Errors.h"
 #include "../repositories/AuthRepository.h"
 #include "../security/AuthCrypto.h"
 
 #include <cstdint>
-#include <stdexcept>
 #include <string>
 
 namespace taskmanager
@@ -16,21 +16,6 @@ class VerificationMailer
     virtual ~VerificationMailer() = default;
     virtual void sendVerificationCode(const std::string &email,
                                       const std::string &token) = 0;
-};
-
-class UnauthorizedError : public std::runtime_error
-{
-  public:
-    using std::runtime_error::runtime_error;
-};
-
-// The caller is authenticated but is not allowed to act on this resource —
-// e.g. editing a task they neither created nor are assigned to, or deleting
-// someone else's note. Maps to HTTP 403 in ErrorMiddleware.
-class ForbiddenError : public std::runtime_error
-{
-  public:
-    using std::runtime_error::runtime_error;
 };
 
 struct AuthTokens

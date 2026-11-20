@@ -1,56 +1,35 @@
 #pragma once
 
-#include <drogon/HttpAppFramework.h>
-#include <trantor/utils/TaskQueue.h>
-
+#include "../http/Dispatcher.h"
 #include "../services/TaskService.h"
+
+#include <drogon/HttpAppFramework.h>
 
 namespace taskmanager
 {
 
+// /api/task/*: create, subtask, status, update, delete, block, and the reads.
+// Every handler requires a signed-in caller.
 class TaskController
 {
   public:
-    TaskController(TaskService &service, trantor::TaskQueue &workers);
+    TaskController(TaskService &service, const http::Dispatcher &dispatcher);
 
     void addTask(const drogon::HttpRequestPtr &request,
                  drogon::AdviceCallback &&callback);
     void addSubtask(const drogon::HttpRequestPtr &request,
                     drogon::AdviceCallback &&callback);
-    void addNote(const drogon::HttpRequestPtr &request,
-                 drogon::AdviceCallback &&callback);
-    void addComment(const drogon::HttpRequestPtr &request,
-                    drogon::AdviceCallback &&callback);
-    void addProject(const drogon::HttpRequestPtr &request,
-                    drogon::AdviceCallback &&callback);
-    void allProjects(const drogon::HttpRequestPtr &request,
-                     drogon::AdviceCallback &&callback);
     void changeStatus(const drogon::HttpRequestPtr &request,
                       drogon::AdviceCallback &&callback);
     void updateTask(const drogon::HttpRequestPtr &request,
                     drogon::AdviceCallback &&callback);
     void deleteTask(const drogon::HttpRequestPtr &request,
                     drogon::AdviceCallback &&callback);
+    // Also pushes the alert to the responsible member's live sockets.
     void raiseBlocker(const drogon::HttpRequestPtr &request,
                       drogon::AdviceCallback &&callback);
-    void pendingBlockers(const drogon::HttpRequestPtr &request,
-                         drogon::AdviceCallback &&callback);
-    void acknowledgeNotification(const drogon::HttpRequestPtr &request,
-                                 drogon::AdviceCallback &&callback);
-    void updateNote(const drogon::HttpRequestPtr &request,
-                    drogon::AdviceCallback &&callback);
-    void deleteNote(const drogon::HttpRequestPtr &request,
-                    drogon::AdviceCallback &&callback);
-    void updateComment(const drogon::HttpRequestPtr &request,
-                       drogon::AdviceCallback &&callback);
-    void deleteComment(const drogon::HttpRequestPtr &request,
-                       drogon::AdviceCallback &&callback);
     void taskDetail(const drogon::HttpRequestPtr &request,
                     drogon::AdviceCallback &&callback);
-    void allUsers(const drogon::HttpRequestPtr &request,
-                  drogon::AdviceCallback &&callback);
-    void notifications(const drogon::HttpRequestPtr &request,
-                       drogon::AdviceCallback &&callback);
     void allTasks(const drogon::HttpRequestPtr &request,
                   drogon::AdviceCallback &&callback);
     void myTasks(const drogon::HttpRequestPtr &request,
@@ -59,13 +38,8 @@ class TaskController
                         drogon::AdviceCallback &&callback);
 
   private:
-    template <typename Work>
-    void run(const drogon::HttpRequestPtr &request,
-             drogon::AdviceCallback &&callback,
-             Work work);
-
     TaskService &service_;
-    trantor::TaskQueue &workers_;
+    const http::Dispatcher &dispatcher_;
 };
 
 }  // namespace taskmanager

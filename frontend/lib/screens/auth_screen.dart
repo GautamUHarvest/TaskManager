@@ -1,8 +1,11 @@
 import 'package:material_ui/material_ui.dart';
 
-import '../auth/auth_api.dart';
 import '../auth/auth_controller.dart';
+import '../auth/auth_validators.dart';
+import '../common/submit_state.dart';
+import '../common/widgets/button_spinner.dart';
 
+/// Sign-in / registration screen, shown whenever no session is active.
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key, required this.controller});
 
@@ -12,16 +15,14 @@ class AuthScreen extends StatefulWidget {
   State<AuthScreen> createState() => _AuthScreenState();
 }
 
-class _AuthScreenState extends State<AuthScreen> {
+class _AuthScreenState extends State<AuthScreen> with SubmitStateMixin {
   final _formKey = GlobalKey<FormState>();
   final _employeeId = TextEditingController();
   final _email = TextEditingController();
   final _displayName = TextEditingController();
   final _password = TextEditingController();
   bool _registering = false;
-  bool _busy = false;
   bool _obscurePassword = true;
-  String? _error;
   String? _notice;
 
   @override
@@ -33,24 +34,14 @@ class _AuthScreenState extends State<AuthScreen> {
     super.dispose();
   }
 
-  Future<void> _run(Future<void> Function() action) async {
-    setState(() {
-      _busy = true;
-      _error = null;
-      _notice = null;
-    });
-    try {
-      await action();
-    } on AuthApiException catch (error) {
-      if (mounted) setState(() => _error = error.message);
-    } catch (_) {
-      if (mounted) {
-        setState(() => _error =
-            'Could not reach the server. Check the API URL and connection.');
-      }
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
+  Future<void> _run(Future<void> Function() action) {
+    // Cleared here; the setState inside runSubmit repaints it away.
+    _notice = null;
+    return runSubmit(
+      action,
+      unreachableMessage:
+          'Could not reach the server. Check the API URL and connection.',
+    );
   }
 
   Future<void> _submit() async {
@@ -81,7 +72,7 @@ class _AuthScreenState extends State<AuthScreen> {
   void _setMode(bool registering) {
     setState(() {
       _registering = registering;
-      _error = null;
+      submitError = null;
       _notice = null;
     });
   }
@@ -141,8 +132,9 @@ class _AuthScreenState extends State<AuthScreen> {
                             ),
                           ],
                           selected: {_registering},
-                          onSelectionChanged:
-                              _busy ? null : (value) => _setMode(value.first),
+                          onSelectionChanged: submitting
+                              ? null
+                              : (value) => _setMode(value.first),
                         ),
                         const SizedBox(height: 20),
                         if (_registering) ...[
@@ -177,9 +169,7 @@ class _AuthScreenState extends State<AuthScreen> {
                           validator: (value) {
                             final input = value?.trim() ?? '';
                             if (input.isEmpty) return 'This field is required';
-                            if (_registering &&
-                                !RegExp(r'^[A-Za-z0-9._-]{1,64}$')
-                                    .hasMatch(input)) {
+                            if (_registering && !isValidEmployeeId(input)) {
                               return 'Use letters, numbers, dots, _ or -';
                             }
                             return null;
@@ -197,7 +187,7 @@ class _AuthScreenState extends State<AuthScreen> {
                               hintText: 'name@uharvest.in',
                             ),
                             validator: (value) =>
-                                _validCompanyEmail(value?.trim() ?? '')
+                                isValidCompanyEmail(value?.trim() ?? '')
                                     ? null
                                     : 'Use a valid @uharvest.in email',
                           ),
@@ -226,15 +216,15 @@ class _AuthScreenState extends State<AuthScreen> {
                             if (value == null || value.isEmpty) {
                               return 'Enter your password';
                             }
-                            if (_registering && !_validPassword(value)) {
+                            if (_registering && !isValidPassword(value)) {
                               return 'Use 6+ characters with uppercase, number and symbol';
                             }
                             return null;
                           },
                         ),
-                        if (_error != null) ...[
+                        if (submitError != null) ...[
                           const SizedBox(height: 16),
-                          _MessageBox(message: _error!, isError: true),
+                          _MessageBox(message: submitError!, isError: true),
                         ],
                         if (_notice != null) ...[
                           const SizedBox(height: 16),
@@ -242,17 +232,11 @@ class _AuthScreenState extends State<AuthScreen> {
                         ],
                         const SizedBox(height: 20),
                         FilledButton(
-                          onPressed: _busy ? null : _submit,
+                          onPressed: submitting ? null : _submit,
                           child: Padding(
                             padding: const EdgeInsets.symmetric(vertical: 12),
-                            child: _busy
-                                ? const SizedBox(
-                                    width: 20,
-                                    height: 20,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  )
+                            child: submitting
+                                ? const ButtonSpinner(size: 20)
                                 : Text(_registering
                                     ? 'Create account'
                                     : 'Sign in'),
@@ -261,13 +245,8 @@ class _AuthScreenState extends State<AuthScreen> {
                         if (!_registering) ...[
                           const SizedBox(height: 8),
                           TextButton(
-                            onPressed: _busy
-                                ? null
-                                : () => setState(() {
-                                      _registering = true;
-                                      _error = null;
-                                      _notice = null;
-                                    }),
+                            onPressed:
+                                submitting ? null : () => _setMode(true),
                             child: const Text('New here? Create an account'),
                           ),
                         ],
@@ -282,18 +261,6 @@ class _AuthScreenState extends State<AuthScreen> {
       ),
     );
   }
-}
-
-bool _validCompanyEmail(String email) {
-  return RegExp(r'^[A-Za-z0-9._+-]+@uharvest\.in$', caseSensitive: false)
-      .hasMatch(email);
-}
-
-bool _validPassword(String password) {
-  return password.length >= 6 &&
-      RegExp(r'[A-Z]').hasMatch(password) &&
-      RegExp(r'[0-9]').hasMatch(password) &&
-      RegExp(r'[^A-Za-z0-9]').hasMatch(password);
 }
 
 class _MessageBox extends StatelessWidget {

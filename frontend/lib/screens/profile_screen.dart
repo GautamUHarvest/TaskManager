@@ -2,7 +2,14 @@ import 'package:material_ui/material_ui.dart';
 
 import '../auth/auth_api.dart';
 import '../auth/auth_controller.dart';
+import '../common/error_messages.dart';
+import '../common/submit_state.dart';
+import '../common/widgets/form_error_text.dart';
+import '../common/widgets/initial_avatar.dart';
+import '../common/widgets/message_card.dart';
 
+/// The signed-in user's account details and the sign-out button. Rendered
+/// as the workspace's Profile pane.
 class ProfileContent extends StatefulWidget {
   const ProfileContent({super.key, required this.controller});
 
@@ -12,10 +19,9 @@ class ProfileContent extends StatefulWidget {
   State<ProfileContent> createState() => _ProfileContentState();
 }
 
-class _ProfileContentState extends State<ProfileContent> {
+class _ProfileContentState extends State<ProfileContent>
+    with SubmitStateMixin {
   late Future<AuthUser> _profile;
-  bool _loggingOut = false;
-  String? _logoutError;
 
   @override
   void initState() {
@@ -25,33 +31,18 @@ class _ProfileContentState extends State<ProfileContent> {
 
   void _reload() {
     setState(() {
-      _logoutError = null;
+      submitError = null;
       _profile = widget.controller.loadProfile();
     });
   }
 
-  Future<void> _logout() async {
-    setState(() {
-      _loggingOut = true;
-      _logoutError = null;
-    });
-    try {
-      await widget.controller.logout();
-    } on AuthApiException catch (error) {
-      if (mounted) setState(() => _logoutError = error.message);
-    } catch (_) {
-      if (mounted) {
-        setState(
-            () => _logoutError = 'Could not reach the server to sign out.');
-      }
-    } finally {
-      if (mounted) setState(() => _loggingOut = false);
-    }
-  }
+  Future<void> _logout() => runSubmit(
+        widget.controller.logout,
+        unreachableMessage: 'Could not reach the server to sign out.',
+      );
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
@@ -69,20 +60,20 @@ class _ProfileContentState extends State<ProfileContent> {
                 );
               }
               if (snapshot.hasError) {
-                final error = snapshot.error is AuthApiException
-                    ? (snapshot.error! as AuthApiException).message
-                    : 'Unable to load your profile.';
                 return Card(
                   child: Padding(
                     padding: const EdgeInsets.all(24),
                     child: Column(
                       children: [
-                        Text(error, textAlign: TextAlign.center),
-                        const SizedBox(height: 16),
-                        FilledButton(
-                          onPressed: _reload,
-                          child: const Text('Try again'),
+                        Text(
+                          errorMessage(
+                            snapshot.error,
+                            fallback: 'Unable to load your profile.',
+                          ),
+                          textAlign: TextAlign.center,
                         ),
+                        const SizedBox(height: 16),
+                        RetryButton(onPressed: _reload),
                       ],
                     ),
                   ),
@@ -96,16 +87,10 @@ class _ProfileContentState extends State<ProfileContent> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      CircleAvatar(
+                      InitialAvatar(
+                        name: user.displayName,
                         radius: 34,
-                        backgroundColor: scheme.primaryContainer,
-                        foregroundColor: scheme.onPrimaryContainer,
-                        child: Text(
-                          user.displayName.isEmpty
-                              ? '?'
-                              : user.displayName[0].toUpperCase(),
-                          style: Theme.of(context).textTheme.headlineMedium,
-                        ),
+                        textStyle: Theme.of(context).textTheme.headlineMedium,
                       ),
                       const SizedBox(height: 16),
                       Text(
@@ -126,23 +111,22 @@ class _ProfileContentState extends State<ProfileContent> {
                         label: 'Email',
                         value: user.email,
                       ),
-                      if (_logoutError != null) ...[
+                      if (submitError != null) ...[
                         const SizedBox(height: 20),
-                        Text(
-                          _logoutError!,
-                          style: TextStyle(color: scheme.error),
+                        FormErrorText(
+                          submitError!,
                           textAlign: TextAlign.center,
                         ),
                       ],
-                      if (_loggingOut) ...[
+                      if (submitting) ...[
                         const SizedBox(height: 20),
                         const LinearProgressIndicator(),
                       ],
                       const SizedBox(height: 24),
                       OutlinedButton(
-                        onPressed: _loggingOut ? null : _logout,
+                        onPressed: submitting ? null : _logout,
                         child:
-                            Text(_loggingOut ? 'Signing out...' : 'Sign out'),
+                            Text(submitting ? 'Signing out...' : 'Sign out'),
                       ),
                     ],
                   ),

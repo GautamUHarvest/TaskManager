@@ -1,17 +1,19 @@
 #pragma once
 
-#include <drogon/HttpAppFramework.h>
-#include <trantor/utils/TaskQueue.h>
-
+#include "../http/Dispatcher.h"
+#include "../security/RateLimiter.h"
 #include "../services/AuthService.h"
+
+#include <drogon/HttpAppFramework.h>
 
 namespace taskmanager
 {
 
+// /api/auth/*: register, login, refresh, logout, me.
 class AuthController
 {
   public:
-    AuthController(AuthService &service, trantor::TaskQueue &workers);
+    AuthController(AuthService &service, const http::Dispatcher &dispatcher);
 
     void registerUser(const drogon::HttpRequestPtr &request,
                       drogon::AdviceCallback &&callback);
@@ -25,13 +27,11 @@ class AuthController
                  drogon::AdviceCallback &&callback);
 
   private:
-    template <typename Work>
-    void run(const drogon::HttpRequestPtr &request,
-             drogon::AdviceCallback &&callback,
-             Work work);
-
     AuthService &service_;
-    trantor::TaskQueue &workers_;
+    const http::Dispatcher &dispatcher_;
+    // Per client IP.
+    security::RateLimiter registerLimiter_;
+    security::RateLimiter loginLimiter_;
 };
 
 }  // namespace taskmanager

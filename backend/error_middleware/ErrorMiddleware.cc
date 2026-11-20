@@ -1,28 +1,15 @@
 #include "ErrorMiddleware.h"
 
-#include "../repositories/AuthRepository.h"
+#include "../http/Responses.h"
 #include "../security/OriginPolicy.h"
-#include "../services/AuthService.h"
 
-#include <json/json.h>
-
-#include <cstdlib>
+#include <stdexcept>
 
 namespace taskmanager
 {
 namespace
 {
-drogon::HttpResponsePtr errorResponse(drogon::HttpStatusCode status,
-                                      const std::string &message)
-{
-    Json::Value body;
-    body["error"] = message;
-    auto response = drogon::HttpResponse::newHttpJsonResponse(body);
-    response->setStatusCode(status);
-    response->addHeader("Cache-Control", "no-store");
-    response->addHeader("Pragma", "no-cache");
-    return response;
-}
+using http::errorResponse;
 
 drogon::HttpResponsePtr normalizeErrorResponse(
     const drogon::HttpResponsePtr &response)
@@ -60,6 +47,34 @@ void addCorsHeaders(const drogon::HttpRequestPtr &request,
     response->addHeader("Access-Control-Allow-Credentials", "true");
     response->addHeader("Vary", "Origin");
 }
+
+// Status for a known error type, or k500InternalServerError.
+drogon::HttpStatusCode statusFor(const std::exception &error)
+{
+    if (dynamic_cast<const UnauthorizedError *>(&error))
+    {
+        return drogon::k401Unauthorized;
+    }
+    if (dynamic_cast<const ForbiddenError *>(&error))
+    {
+        return drogon::k403Forbidden;
+    }
+    if (dynamic_cast<const DuplicateUserError *>(&error) ||
+        dynamic_cast<const UserLimitError *>(&error))
+    {
+        return drogon::k409Conflict;
+    }
+    if (dynamic_cast<const TooManyRequestsError *>(&error))
+    {
+        return drogon::k429TooManyRequests;
+    }
+    // NotFoundError derives from invalid_argument, so it lands here too.
+    if (dynamic_cast<const std::invalid_argument *>(&error))
+    {
+        return drogon::k400BadRequest;
+    }
+    return drogon::k500InternalServerError;
+}
 }  // namespace
 
 void ErrorMiddleware::invoke(
@@ -85,42 +100,22 @@ void ErrorMiddleware::handleException(
     const drogon::HttpRequestPtr &,
     drogon::AdviceCallback &&callback)
 {
+    const auto status = statusFor(error);
+    if (status == drogon::k500InternalServerError)
+    {
+        LOG_ERROR << "Unhandled request exception: " << error.what();
+        callback(errorResponse(status, "Internal server error"));
+        return;
+    }
+    // Registration conflicts use fixed public wording rather than the
+    // repository's message.
     if (dynamic_cast<const DuplicateUserError *>(&error))
     {
-        callback(errorResponse(drogon::k409Conflict,
+        callback(errorResponse(status,
                                "Employee ID or email is already registered"));
         return;
     }
-    if (const auto *limit = dynamic_cast<const UserLimitError *>(&error))
-    {
-        callback(errorResponse(drogon::k409Conflict, limit->what()));
-        return;
-    }
-    if (const auto *unauthorized = dynamic_cast<const UnauthorizedError *>(&error))
-    {
-        callback(errorResponse(drogon::k401Unauthorized, unauthorized->what()));
-        return;
-    }
-    if (const auto *forbidden = dynamic_cast<const ForbiddenError *>(&error))
-    {
-        callback(errorResponse(drogon::k403Forbidden, forbidden->what()));
-        return;
-    }
-    if (const auto *rateLimit =
-            dynamic_cast<const TooManyRequestsError *>(&error))
-    {
-        callback(errorResponse(drogon::k429TooManyRequests, rateLimit->what()));
-        return;
-    }
-    if (const auto *invalid = dynamic_cast<const std::invalid_argument *>(&error))
-    {
-        callback(errorResponse(drogon::k400BadRequest, invalid->what()));
-        return;
-    }
-
-    LOG_ERROR << "Unhandled request exception: " << error.what();
-    callback(errorResponse(drogon::k500InternalServerError,
-                           "Internal server error"));
+    callback(errorResponse(status, error.what()));
 }
 
 }  // namespace taskmanager

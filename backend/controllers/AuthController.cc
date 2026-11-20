@@ -1,90 +1,27 @@
 #include "AuthController.h"
 
-#include "../error_middleware/ErrorMiddleware.h"
+#include "../http/JsonMappers.h"
+#include "../http/RequestParsing.h"
+#include "../http/Responses.h"
 
-#include <algorithm>
-#include <cctype>
 #include <chrono>
-#include <functional>
-#include <mutex>
-#include <string>
-#include <unordered_map>
 #include <utility>
 
 namespace taskmanager
 {
 namespace
 {
-Json::Value requiredBody(const drogon::HttpRequestPtr &request)
-{
-    const auto &body = request->getJsonObject();
-    if (!body || !body->isObject())
-    {
-        throw std::invalid_argument("A JSON request body is required");
-    }
-    return *body;
-}
-
-std::string requiredString(const Json::Value &body, const char *field)
-{
-    if (!body.isMember(field) || !body[field].isString() ||
-        body[field].asString().empty())
-    {
-        throw std::invalid_argument(std::string("Field '") + field +
-                                    "' is required");
-    }
-    return body[field].asString();
-}
-
-std::string bearerToken(const drogon::HttpRequestPtr &request)
-{
-    const auto &authorization = request->getHeader("authorization");
-    if (authorization.size() <= 7)
-    {
-        throw UnauthorizedError("A bearer access token is required");
-    }
-
-    std::string scheme = authorization.substr(0, 7);
-    std::transform(scheme.begin(),
-                   scheme.end(),
-                   scheme.begin(),
-                   [](unsigned char character) {
-                       return static_cast<char>(std::tolower(character));
-                   });
-    if (scheme != "bearer ")
-    {
-        throw UnauthorizedError("A bearer access token is required");
-    }
-    return authorization.substr(7);
-}
-
-drogon::HttpResponsePtr jsonResponse(drogon::HttpStatusCode status,
-                                     const Json::Value &body)
-{
-    auto response = drogon::HttpResponse::newHttpJsonResponse(body);
-    response->setStatusCode(status);
-    response->addHeader("Cache-Control", "no-store");
-    response->addHeader("Pragma", "no-cache");
-    return response;
-}
-
-Json::Value userJson(const UserRecord &user)
-{
-    Json::Value body;
-    body["id"] = Json::Int64(user.id);
-    body["employee_id"] = user.employeeId;
-    body["email"] = user.email;
-    body["display_name"] = user.displayName;
-    return body;
-}
+using http::jsonResponse;
+using http::requiredBody;
+using http::requiredString;
 
 // Response body for login/refresh. The refresh token is returned in the JSON
 // body: the client stores it (localStorage) and sends it back in the
 // /auth/refresh request body. SECURITY NOTE: this is the localStorage token
 // model — the refresh token is readable by JavaScript and therefore exposed to
-// XSS. It was chosen deliberately so the app works over plain HTTP on a LAN/demo
-// box (no Secure-cookie / HTTPS requirement). For production, prefer the
-// HttpOnly-cookie model over HTTPS. See apirequirement.md.
+// XSS. It was chosen deliberately so the app works over plain HTTP on a
+// LAN/demo box (no Secure-cookie / HTTPS requirement). For production, prefer
+// the HttpOnly-cookie model over HTTPS. See apirequirement.md.
 Json::Value tokensJson(const AuthTokens &tokens)
 {
     Json::Value body;
@@ -92,156 +29,87 @@ Json::Value tokensJson(const AuthTokens &tokens)
     body["refresh_token"] = tokens.refreshToken;
     body["token_type"] = "Bearer";
     body["expires_in"] = Json::Int64(tokens.accessExpiresIn);
-    body["user"] = userJson(tokens.user);
+    body["user"] = http::toJson(tokens.user);
     return body;
 }
 
-void requireRateLimit(const drogon::HttpRequestPtr &request,
-                      const std::string &key,
-                      std::size_t count,
-                      std::chrono::seconds period)
+std::string clientKey(const char *action, const drogon::HttpRequestPtr &request)
 {
-    struct Window
-    {
-        std::chrono::steady_clock::time_point start;
-        std::size_t count{0};
-    };
-    static std::mutex mutex;
-    static std::unordered_map<std::string, Window> windows;
-    const auto now = std::chrono::steady_clock::now();
-    const auto limiterKey = key + ':' + request->getPeerAddr().toIp();
-    std::lock_guard<std::mutex> lock(mutex);
-    auto &window = windows[limiterKey];
-    if (window.start.time_since_epoch().count() == 0 ||
-        now - window.start >= period)
-    {
-        window = Window{now, 0};
-    }
-    if (window.count >= count)
-    {
-        throw TooManyRequestsError("Too many requests");
-    }
-    ++window.count;
-    if (windows.size() > 4096)
-    {
-        for (auto item = windows.begin(); item != windows.end();)
-        {
-            if (now - item->second.start >= period)
-            {
-                item = windows.erase(item);
-            }
-            else
-            {
-                ++item;
-            }
-        }
-    }
+    return std::string(action) + ':' + request->getPeerAddr().toIp();
 }
 }  // namespace
 
 AuthController::AuthController(AuthService &service,
-                               trantor::TaskQueue &workers)
-    : service_(service), workers_(workers)
+                               const http::Dispatcher &dispatcher)
+    : service_(service),
+      dispatcher_(dispatcher),
+      registerLimiter_(20, std::chrono::hours(1)),
+      loginLimiter_(60, std::chrono::minutes(1))
 {
-}
-
-template <typename Work>
-void AuthController::run(const drogon::HttpRequestPtr &request,
-                         drogon::AdviceCallback &&callback,
-                         Work work)
-{
-    workers_.runTaskInQueue(
-            [request,
-             work = std::move(work),
-             callback = std::move(callback)]() mutable {
-                try
-                {
-                    callback(work());
-                }
-                catch (const std::exception &error)
-                {
-                    ErrorMiddleware::handleException(
-                        error, request, std::move(callback));
-                }
-            });
 }
 
 void AuthController::registerUser(const drogon::HttpRequestPtr &request,
                                   drogon::AdviceCallback &&callback)
 {
     const auto body = requiredBody(request);
-    requireRateLimit(request, "register", 20, std::chrono::hours(1));
-    run(request,
-        std::move(callback),
-        [this, body]() {
-            const auto userId = service_.
-            registerUser(
-                requiredString(body, "employee_id"),
-                requiredString(body, "email"),
-                requiredString(body, "display_name"),
-                requiredString(body, "password"));
-            Json::Value response;
-            response["message"] = "Account created. You can now sign in";
-            response["user_id"] = Json::Int64(userId);
-            return jsonResponse(drogon::k201Created, response);
-        });
+    registerLimiter_.acquire(clientKey("register", request));
+    dispatcher_.run(request, std::move(callback), [this, body]() {
+        const auto userId =
+            service_.registerUser(requiredString(body, "employee_id"),
+                                  requiredString(body, "email"),
+                                  requiredString(body, "display_name"),
+                                  requiredString(body, "password"));
+        Json::Value response;
+        response["message"] = "Account created. You can now sign in";
+        response["user_id"] = Json::Int64(userId);
+        return jsonResponse(drogon::k201Created, response);
+    });
 }
 
 void AuthController::login(const drogon::HttpRequestPtr &request,
                            drogon::AdviceCallback &&callback)
 {
     const auto body = requiredBody(request);
-    requireRateLimit(request, "login", 60, std::chrono::minutes(1));
-    run(request,
-        std::move(callback),
-        [this, body]() {
-            const auto tokens =
-                service_.login(requiredString(body, "login"),
-                               requiredString(body, "password"));
-            return jsonResponse(drogon::k200OK, tokensJson(tokens));
-        });
+    loginLimiter_.acquire(clientKey("login", request));
+    dispatcher_.run(request, std::move(callback), [this, body]() {
+        const auto tokens = service_.login(requiredString(body, "login"),
+                                           requiredString(body, "password"));
+        return jsonResponse(drogon::k200OK, tokensJson(tokens));
+    });
 }
 
 void AuthController::refresh(const drogon::HttpRequestPtr &request,
                              drogon::AdviceCallback &&callback)
 {
-    // The client sends its stored refresh token in the request body.
-    // AuthService::refresh rotates the token on every call, so the response
-    // carries a fresh refresh token the client must persist in its place.
+    // The client sends its stored refresh token in the body. It is rotated on
+    // every call, so the response carries a new one to persist in its place.
     const auto body = requiredBody(request);
-    run(request,
-        std::move(callback),
-        [this, body]() {
-            const auto tokens =
-                service_.refresh(requiredString(body, "refresh_token"));
-            return jsonResponse(drogon::k200OK, tokensJson(tokens));
-        });
+    dispatcher_.run(request, std::move(callback), [this, body]() {
+        const auto tokens =
+            service_.refresh(requiredString(body, "refresh_token"));
+        return jsonResponse(drogon::k200OK, tokensJson(tokens));
+    });
 }
 
 void AuthController::logout(const drogon::HttpRequestPtr &request,
                             drogon::AdviceCallback &&callback)
 {
-    const auto token = bearerToken(request);
-    run(request,
-        std::move(callback),
-        [this, token]() {
-            service_.logout(token);
-            auto response = drogon::HttpResponse::newHttpResponse();
-            response->setStatusCode(drogon::k204NoContent);
-            response->addHeader("Cache-Control", "no-store");
-            return response;
-        });
+    // Needs the raw token (it names the session to revoke), so this uses
+    // run() rather than authenticated().
+    const auto token = http::bearerToken(request);
+    dispatcher_.run(request, std::move(callback), [this, token]() {
+        service_.logout(token);
+        return http::noContentResponse();
+    });
 }
 
 void AuthController::profile(const drogon::HttpRequestPtr &request,
                              drogon::AdviceCallback &&callback)
 {
-    const auto token = bearerToken(request);
-    run(request,
-        std::move(callback),
-        [this, token]() {
+    dispatcher_.authenticated(
+        request, std::move(callback), [](const UserRecord &user) {
             Json::Value response;
-            response["user"] = userJson(service_.profile(token));
+            response["user"] = http::toJson(user);
             return jsonResponse(drogon::k200OK, response);
         });
 }

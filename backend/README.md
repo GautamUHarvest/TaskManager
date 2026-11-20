@@ -1,18 +1,33 @@
 # Task Manager authentication API
 
-The backend uses Drogon routes and controllers, a SQLite repository, and
-OpenSSL password and token utilities. URL and
-HTTP-method mappings live in `routes/`; endpoint request handling lives in
-`controllers/AuthController.*`; application rules live in `services/`; data
-records live in `models/`; database access and migrations live in
-`repositories/` and `migrations/`. `error_middleware/ErrorMiddleware` normalizes
-error responses and maps request exceptions to consistent JSON responses.
+The backend uses Drogon for HTTP, raw SQLite for storage, and OpenSSL for
+password and token utilities. Code is layered, one module per resource
+(auth, task, project, note, comment, notification, user):
 
-Request flow is: route -> `ErrorMiddleware` -> controller -> auth service ->
-security utilities and repository -> SQLite. Drogon catches controller
-exceptions outside the
-middleware chain, so `main.cc` also forwards its exception hook to the same
-error middleware. Unmatched routes use the middleware's JSON 404 response.
+| Directory | Holds |
+| --- | --- |
+| `routes/ApiRoutes.cc` | The whole REST route table (path, method, handler) |
+| `controllers/` | One controller per resource: parse the request, call a service, map the result to JSON |
+| `services/` | Business rules and permissions; `TaskRules` holds the pure validation rules |
+| `repositories/` | SQL, one repository per table group; `Rows` holds shared column lists and row mappers |
+| `models/` | Plain record structs |
+| `http/` | Shared HTTP plumbing: `Router` (route + CORS preflight registry), `Dispatcher` (worker-queue + auth), request parsing, JSON mappers, response builders |
+| `db/` | `Sqlite` (Connection, Statement, Transaction, typed `SqliteError`) and `Migrations` |
+| `common/` | `Errors.h` (every exception type and its HTTP status) and text helpers |
+| `security/` | Password hashing, JWTs, input validation, origin allowlist, rate limiter |
+| `config/` | `AppConfig`: all environment variables, read once at startup |
+| `error_middleware/` | Maps exceptions to `{"error": ...}` responses and adds CORS headers |
+
+Request flow is: `Router` -> `ErrorMiddleware` -> controller -> `Dispatcher`
+(worker queue; verifies the bearer token) -> service -> repository -> SQLite.
+Services receive the signed-in user, never a raw token. Drogon catches
+exceptions thrown outside the middleware chain, so `main.cc` also forwards its
+exception hook to the same error middleware. Unmatched routes use the
+middleware's JSON 404 response.
+
+Adding an endpoint: a repository method if new SQL is needed, a service
+method, a controller handler, and one line in `routes/ApiRoutes.cc` — which
+also makes CORS preflight accept it.
 
 ## Configuration
 
@@ -36,7 +51,7 @@ restrictive umask and restricts an existing SQLite database file to its owner.
 
 For Flutter Web, set `TASK_MANAGER_CORS_ORIGIN` to the exact origin shown by
 the Flutter development server. The API allows only that origin and handles
-preflight requests for the authentication routes; it does not enable
+preflight requests for every registered route; it does not enable
 credentialed cross-origin requests.
 
 The database applies numbered SQL files in `migrations/` once, in version
@@ -153,7 +168,7 @@ location /ws/ {
 ```
 
 A caller with a valid token who fails one of these rules gets `403 Forbidden`
-(`ForbiddenError` in `services/AuthService.h`, mapped in `ErrorMiddleware`).
+(`ForbiddenError` in `common/Errors.h`, mapped in `ErrorMiddleware`).
 Deleting a task also clears its notes, events and notifications by hand,
 because those tables reference `tasks` with `ON DELETE RESTRICT` (migration
 001); assignees and comments cascade on their own (migration 006).

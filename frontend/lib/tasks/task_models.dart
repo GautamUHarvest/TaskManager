@@ -154,6 +154,14 @@ class Task {
   final int version;
   final DateTime? createdAt;
   final DateTime? updatedAt;
+
+  /// Every assignee of this task. Falls back to the single [assigneeId] when
+  /// the task was built without a list.
+  List<int> get allAssigneeIds {
+    if (assigneeIds.isNotEmpty) return assigneeIds;
+    final single = assigneeId;
+    return single == null ? const <int>[] : [single];
+  }
 }
 
 /// A project groups tasks. The built-in "Unidentified" project is always
@@ -281,6 +289,39 @@ class TaskDetail {
   final List<Task> subtasks;
   final List<TaskNote> notes;
   final List<TaskComment> comments;
+
+  TaskDetail copyWith({
+    Task? task,
+    List<Task>? subtasks,
+    List<TaskNote>? notes,
+    List<TaskComment>? comments,
+  }) =>
+      TaskDetail(
+        task: task ?? this.task,
+        subtasks: subtasks ?? this.subtasks,
+        notes: notes ?? this.notes,
+        comments: comments ?? this.comments,
+      );
+
+  /// Ids of every comment nested anywhere beneath [commentId] — the replies
+  /// the server cascades away when that comment is deleted.
+  Set<int> replyIdsUnder(int commentId) {
+    final found = <int>{};
+    var frontier = <int>{commentId};
+    while (frontier.isNotEmpty) {
+      final next = <int>{};
+      for (final comment in comments) {
+        final parent = comment.parentCommentId;
+        if (parent != null &&
+            frontier.contains(parent) &&
+            found.add(comment.id)) {
+          next.add(comment.id);
+        }
+      }
+      frontier = next;
+    }
+    return found;
+  }
 }
 
 /// A blocker alert: someone flagged the signed-in user as responsible for

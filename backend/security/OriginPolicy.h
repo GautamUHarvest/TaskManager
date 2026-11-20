@@ -4,9 +4,8 @@
 #include <string>
 #include <vector>
 
-// Header-only on purpose: sources are gathered with aux_source_directory,
-// which only rescans at configure time, so a new .cc here would silently be
-// left out of the link until someone re-ran cmake.
+// Exact-origin allowlist shared by the CORS preflight (http::Router), CORS
+// response headers (ErrorMiddleware) and the WebSocket Origin check.
 namespace taskmanager::security
 {
 

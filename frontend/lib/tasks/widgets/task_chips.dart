@@ -1,11 +1,6 @@
 import 'package:material_ui/material_ui.dart';
 
-import 'task_models.dart';
-
-/// Shared, short `YYYY-MM-DD` formatter used across the task UI.
-String formatTaskDate(DateTime date) =>
-    '${date.year}-${date.month.toString().padLeft(2, '0')}-'
-    '${date.day.toString().padLeft(2, '0')}';
+import '../task_models.dart';
 
 /// A small, neutral tag for secondary attributes like type and discipline.
 /// Deliberately low-contrast so it doesn't compete with the status chip.

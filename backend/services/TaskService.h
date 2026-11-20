@@ -2,128 +2,78 @@
 
 #include "../models/Task.h"
 #include "../models/User.h"
+#include "../repositories/CommentRepository.h"
+#include "../repositories/NoteRepository.h"
+#include "../repositories/ProjectRepository.h"
 #include "../repositories/TaskRepository.h"
-#include "AuthService.h"
+#include "../repositories/UserRepository.h"
 
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <vector>
 
 namespace taskmanager
 {
 
-// Task-management reads. Every call authenticates the bearer access token
-// through AuthService (reusing the existing JWT verification) and throws
-// UnauthorizedError on an invalid or expired token.
+// Task lifecycle: create, edit, status, delete, blockers, and the task reads.
+//
+// Every method takes the already-authenticated caller (`actor`); verifying
+// the bearer token is the controller's job. Permission model (see
+// apirequirement.md §4 and rules::canEditTask): a task may be edited, or have
+// a blocker raised on it, by its creator or any assignee, and deleted only by
+// its creator. Violations throw ForbiddenError (HTTP 403).
 class TaskService
 {
   public:
-    TaskService(AuthService &auth, TaskRepository &repository);
+    TaskService(TaskRepository &tasks,
+                ProjectRepository &projects,
+                UserRepository &users,
+                NoteRepository &notes,
+                CommentRepository &comments);
 
-    // Projects. project_id is optional on task creation; when omitted the task
-    // falls under the default "Unidentified" project (id 1).
-    ProjectRecord addProject(const std::string &accessToken,
-                             const std::string &name,
-                             const std::optional<std::string> &description);
-    std::vector<ProjectRecord> allProjects(const std::string &accessToken);
-
-    TaskRecord addTask(const std::string &accessToken,
-                       const std::string &title,
-                       const std::optional<std::string> &description,
-                       const std::optional<std::string> &status,
-                       const std::optional<std::string> &type,
-                       const std::optional<std::string> &discipline,
-                       const std::optional<std::string> &dueAt,
-                       const std::optional<std::string> &startAt,
-                       const std::vector<std::int64_t> &assigneeIds,
-                       const std::optional<std::int64_t> &parentTaskId,
-                       const std::optional<std::int64_t> &projectId);
-    // Creates a subtask under an existing parent task. parent_task_id is
-    // required (unlike addTask, where it is optional).
-    TaskRecord addSubtask(const std::string &accessToken,
+    // parent_task_id and project_id are optional; an omitted project_id means
+    // the default "Unidentified" project.
+    TaskRecord addTask(const UserRecord &actor, const TaskInput &input);
+    // Creates a subtask under an existing parent; input.parentTaskId is
+    // ignored in favour of parentTaskId.
+    TaskRecord addSubtask(const UserRecord &actor,
                           std::int64_t parentTaskId,
-                          const std::string &title,
-                          const std::optional<std::string> &description,
-                          const std::optional<std::string> &status,
-                          const std::optional<std::string> &type,
-                          const std::optional<std::string> &discipline,
-                          const std::optional<std::string> &dueAt,
-                          const std::optional<std::string> &startAt,
-                          const std::vector<std::int64_t> &assigneeIds,
-                          const std::optional<std::int64_t> &projectId);
-    // Adds a free-text note to an existing task, authored by the token's user.
-    TaskNoteRecord addNote(const std::string &accessToken,
-                           std::int64_t taskId,
-                           const std::string &body);
-    // Adds a comment (or a threaded reply when parentCommentId is set) to a
-    // task, and notifies every assignee of that task except the author.
-    CommentRecord addComment(const std::string &accessToken,
-                             std::int64_t taskId,
-                             const std::string &body,
-                             const std::optional<std::int64_t> &parentCommentId);
-    // Changes an existing task's status to one of the allowed values.
-    TaskRecord changeStatus(const std::string &accessToken,
+                          TaskInput input);
+    TaskRecord changeStatus(const UserRecord &actor,
                             std::int64_t taskId,
                             const std::string &status);
+    // Applies the engaged fields of `update`. Throws std::invalid_argument
+    // when nothing was supplied.
+    TaskRecord editTask(const UserRecord &actor, TaskUpdate update);
+    // Refuses while the task still has subtasks — those go first.
+    void deleteTask(const UserRecord &actor, std::int64_t taskId);
 
-    // --- Edit / delete -----------------------------------------------------
-    // Permission model (see apirequirement.md §4): a task may be edited by its
-    // creator or any of its assignees, but deleted only by its creator; a note
-    // or comment may be edited and deleted only by its author. A caller who is
-    // authenticated but not permitted gets ForbiddenError (HTTP 403).
-
-    // Applies the engaged fields of `update` (taskId is taken from it) and
-    // returns the task with a bumped version. Throws std::invalid_argument
-    // when nothing was supplied or the task does not exist.
-    TaskRecord editTask(const std::string &accessToken, TaskUpdate update);
-    // Deletes a task along with its notes, events, notifications, assignees
-    // and comments. Refuses with std::invalid_argument when the task still has
-    // subtasks — those must be dealt with first.
-    void deleteTask(const std::string &accessToken, std::int64_t taskId);
-
-    // --- Blockers ----------------------------------------------------------
-    // Flags the task as blocked on `responsibleId` and stores an alert for
-    // them. May be called by the task's creator or any of its assignees (the
-    // same rule as editing); naming yourself is rejected. Sets the status to
-    // 'blocked', bumps the version and logs a 'blocked' event.
-    BlockerRaised raiseBlocker(const std::string &accessToken,
+    // Flags the task as blocked on `responsibleId` (who may not be the
+    // caller) and stores an alert for them. The caller pushes the returned
+    // notification over the WebSocket.
+    BlockerRaised raiseBlocker(const UserRecord &actor,
                                std::int64_t taskId,
                                std::int64_t responsibleId,
                                const std::string &message);
-    // Blocker alerts the caller has not acknowledged yet, oldest first, so a
-    // client that was offline when one was raised can still show it.
-    std::vector<NotificationRecord> pendingBlockers(
-        const std::string &accessToken);
-    // Dismisses one of the caller's own alerts so it is not replayed.
-    void acknowledgeNotification(const std::string &accessToken,
-                                 std::int64_t notificationId);
 
-    TaskNoteRecord editNote(const std::string &accessToken,
-                            std::int64_t noteId,
-                            const std::string &body);
-    void deleteNote(const std::string &accessToken, std::int64_t noteId);
-
-    CommentRecord editComment(const std::string &accessToken,
-                              std::int64_t commentId,
-                              const std::string &body);
-    // Returns how many nested replies were cascade-deleted along with it, so
-    // the caller can report it.
-    std::int64_t deleteComment(const std::string &accessToken,
-                               std::int64_t commentId);
-    // Returns a task with its direct subtasks, notes, and comments. Throws
-    // std::invalid_argument ("Task not found") if the id does not exist.
-    TaskDetail taskDetail(const std::string &accessToken, std::int64_t taskId);
-    std::vector<UserRecord> allUsers(const std::string &accessToken);
-    std::vector<NotificationRecord> notifications(
-        const std::string &accessToken);
-    std::vector<TaskRecord> allTasks(const std::string &accessToken);
-    std::vector<TaskRecord> myTasks(const std::string &accessToken);
-    std::vector<TaskRecord> completedTasks(const std::string &accessToken);
+    // A task with its direct subtasks, notes, and comments.
+    TaskDetail taskDetail(std::int64_t taskId);
+    std::vector<TaskRecord> allTasks();
+    std::vector<TaskRecord> myTasks(const UserRecord &actor);
+    std::vector<TaskRecord> completedTasks();
 
   private:
-    AuthService &auth_;
-    TaskRepository &repository_;
+    // The task, or NotFoundError ("Task not found").
+    TaskRecord requireTask(std::int64_t taskId);
+    // project_id has no DB-level foreign key (migration 006), so a supplied
+    // project id is checked here.
+    void requireProject(std::int64_t projectId);
+
+    TaskRepository &tasks_;
+    ProjectRepository &projects_;
+    UserRepository &users_;
+    NoteRepository &notes_;
+    CommentRepository &comments_;
 };
 
 }  // namespace taskmanager
