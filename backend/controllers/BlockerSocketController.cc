@@ -1,9 +1,11 @@
 #include "BlockerSocketController.h"
 
+#include "../security/OriginPolicy.h"
 #include "../services/BlockerHub.h"
 
 #include <drogon/HttpAppFramework.h>
 #include <json/json.h>
+#include <trantor/utils/Logger.h>
 
 #include <chrono>
 #include <cstdint>
@@ -51,14 +53,25 @@ void BlockerSocketController::handleNewConnection(
     // CORS does not apply to WebSockets, so the Origin check has to be done
     // here or any site could open a socket against this backend. Same
     // exact-origin allowlist the HTTP routes use.
-    const auto *allowedOrigin = std::getenv("TASK_MANAGER_CORS_ORIGIN");
-    if (allowedOrigin && allowedOrigin[0] != '\0' &&
-        request->getHeader("origin") != allowedOrigin)
+    // Unset means no allowlist is configured, so the check is skipped (same
+    // as before); otherwise the Origin must match one listed entry.
+    const char *allowedOrigin = std::getenv("TASK_MANAGER_CORS_ORIGIN");
+    if (!security::allowedOrigins().empty() &&
+        !security::isAllowedOrigin(request->getHeader("origin")))
     {
+        // Logged loudly: a browser reports this as an immediate close with no
+        // reason, and the mismatch is easy to hit behind nginx, where the REST
+        // API is same-origin and never exercises TASK_MANAGER_CORS_ORIGIN —
+        // so it can be stale or wrong without anything else noticing.
+        LOG_WARN << "WebSocket rejected: Origin '"
+                 << request->getHeader("origin")
+                 << "' does not match TASK_MANAGER_CORS_ORIGIN '"
+                 << allowedOrigin << "'";
         connection->shutdown(drogon::CloseCode::kViolation,
                             "Origin not allowed");
         return;
     }
+    LOG_DEBUG << "WebSocket connected, awaiting auth frame";
 
     // Close the socket if it has not authenticated in time, so an anonymous
     // connection cannot be parked open indefinitely. Held weakly so a socket
@@ -137,11 +150,14 @@ void BlockerSocketController::handleNewMessage(
                 BlockerHub::instance().authenticate(connection, token);
             if (userId == 0)
             {
+                LOG_WARN << "WebSocket auth rejected: invalid or expired "
+                            "access token";
                 sendError(connection, "Invalid or expired access token");
                 connection->shutdown(drogon::CloseCode::kViolation,
                                      "Authentication failed");
                 return;
             }
+            LOG_DEBUG << "WebSocket authenticated for user " << userId;
             Json::Value ok;
             ok["type"] = "auth_ok";
             ok["user_id"] = Json::Int64(userId);

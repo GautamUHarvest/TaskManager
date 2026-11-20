@@ -1,6 +1,7 @@
 #include "ErrorMiddleware.h"
 
 #include "../repositories/AuthRepository.h"
+#include "../security/OriginPolicy.h"
 #include "../services/AuthService.h"
 
 #include <json/json.h>
@@ -49,10 +50,8 @@ drogon::HttpResponsePtr normalizeErrorResponse(
 void addCorsHeaders(const drogon::HttpRequestPtr &request,
                     const drogon::HttpResponsePtr &response)
 {
-    const auto *allowedOrigin = std::getenv("TASK_MANAGER_CORS_ORIGIN");
     const auto &origin = request->getHeader("origin");
-    if (!allowedOrigin || allowedOrigin[0] == '\0' ||
-        origin != allowedOrigin)
+    if (!security::isAllowedOrigin(origin))
     {
         return;
     }

@@ -25,7 +25,7 @@ Set these environment variables before starting the backend:
 | `TASK_MANAGER_MIGRATIONS_DIR` | no | SQL migration directory; defaults to the build's copied migrations |
 | `TASK_MANAGER_TLS_CERT` | yes | PEM certificate for the HTTPS listener |
 | `TASK_MANAGER_TLS_KEY` | yes | Matching private key; protect its file permissions |
-| `TASK_MANAGER_CORS_ORIGIN` | no | Exact browser origin allowed to call the auth API, e.g. `http://localhost:5000`; do not include a path or trailing slash |
+| `TASK_MANAGER_CORS_ORIGIN` | no | Comma-separated list of exact browser origins allowed for CORS and the `/ws/notifications` socket, e.g. `http://localhost:5000,http://192.168.0.23`; no paths |
 | `TASK_MANAGER_LISTEN_ADDRESS` | no | Listener address; defaults to `0.0.0.0` |
 | `TASK_MANAGER_PORT` | no | HTTPS port; defaults to `5555` |
 
@@ -125,7 +125,11 @@ A browser cannot set `Authorization` on a WebSocket handshake, and a token in
 the query string would be logged by nginx and Drogon — which this README
 forbids below. Unauthenticated sockets are closed after 10 seconds, and the
 handshake's `Origin` is checked against `TASK_MANAGER_CORS_ORIGIN` because CORS
-does not apply to WebSockets. Token verification reads SQLite, so it is
+does not apply to WebSockets. **Behind nginx this check still applies even
+though the REST API is same-origin:** the list must include the origin users
+open the app from (e.g. `http://192.168.0.23`), or the socket upgrades and is
+immediately closed — and phones fall back to seeing blockers only on reload.
+Token verification reads SQLite, so it is
 dispatched to the `auth-workers` queue rather than run on the event loop.
 
 Live delivery is best-effort: `services/BlockerHub` keeps an in-memory map of
@@ -177,4 +181,5 @@ XSS. Keep access tokens in memory only and never put bearer tokens in URLs or
 application logs.
 
 CORS uses an exact-origin allowlist, not a wildcard: set
-`TASK_MANAGER_CORS_ORIGIN` to the single frontend origin.
+`TASK_MANAGER_CORS_ORIGIN` to the frontend origin, or a comma-separated list
+of them when the app is opened from more than one (dev server and LAN IP).

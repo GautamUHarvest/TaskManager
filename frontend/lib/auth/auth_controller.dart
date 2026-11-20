@@ -39,6 +39,11 @@ class AuthController extends ChangeNotifier {
   final StreamController<BlockerAlert> _blockerAlerts =
       StreamController<BlockerAlert>.broadcast();
 
+  /// How often to poll for blockers while the WebSocket is not live. Short
+  /// enough to still feel immediate, and trivial load for a 25-account cap.
+  static const Duration _blockerPollInterval = Duration(seconds: 10);
+  Timer? _blockerPoll;
+
   /// Alert ids already handed to the UI this session, so a replayed alert
   /// that also arrives live is only shown once.
   final Set<int> _deliveredBlockerIds = <int>{};
@@ -146,6 +151,20 @@ class AuthController extends ChangeNotifier {
     socket.alerts.listen(_emitBlocker);
     socket.connect();
     unawaited(_replayPendingBlockers());
+
+    // Fallback poll. The WebSocket is the fast path, but it only works if the
+    // deployment actually proxies WebSocket upgrades (nginx needs an explicit
+    // /ws/ location) — and it can drop for ordinary network reasons. Polling
+    // whenever the socket is not live means a blocker still surfaces within
+    // seconds instead of waiting for the next page load, which is the whole
+    // point of the feature. It stands down the moment the socket is ready, so
+    // a healthy deployment pays nothing for it.
+    _blockerPoll?.cancel();
+    _blockerPoll = Timer.periodic(_blockerPollInterval, (_) {
+      if (_tokens == null) return;
+      if (_blockerSocket?.isReady ?? false) return;
+      unawaited(_replayPendingBlockers());
+    });
   }
 
   /// Pulls blockers raised while this user had no tab open and feeds them
@@ -172,6 +191,8 @@ class AuthController extends ChangeNotifier {
   }
 
   void _stopBlockerChannel() {
+    _blockerPoll?.cancel();
+    _blockerPoll = null;
     _blockerSocket?.dispose();
     _blockerSocket = null;
     _deliveredBlockerIds.clear();

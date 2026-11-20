@@ -39,7 +39,7 @@ flutter test        # (no tests committed yet)
 flutter analyze     # lints via flutter_lints (analysis_options.yaml)
 ```
 
-The web port must match the backend's `TASK_MANAGER_CORS_ORIGIN` (defaults to `http://localhost:5000`), and `API_BASE_URL` must match the backend listener.
+The web port must be in the backend's `TASK_MANAGER_CORS_ORIGIN` allowlist (`run-local.sh` defaults it to `http://localhost:5000` plus `http://<each IPv4 of the host>`), and `API_BASE_URL` must match the backend listener.
 
 ## Backend architecture
 

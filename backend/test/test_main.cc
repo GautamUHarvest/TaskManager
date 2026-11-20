@@ -3,6 +3,44 @@
 #include <drogon/drogon.h>
 
 #include "../security/AuthCrypto.h"
+#include "../security/OriginPolicy.h"
+
+#include <cstdlib>
+
+DROGON_TEST(CorsOriginAllowlist)
+{
+    using taskmanager::security::allowedOrigins;
+    using taskmanager::security::isAllowedOrigin;
+
+    // Unset: nothing is allowed, and an empty list tells the WebSocket check
+    // to skip itself.
+    ::unsetenv("TASK_MANAGER_CORS_ORIGIN");
+    CHECK(allowedOrigins().empty());
+    CHECK(!isAllowedOrigin("http://localhost:5000"));
+
+    // Single origin keeps working exactly as before.
+    ::setenv("TASK_MANAGER_CORS_ORIGIN", "http://localhost:5000", 1);
+    CHECK(isAllowedOrigin("http://localhost:5000"));
+    CHECK(!isAllowedOrigin("http://192.168.0.23"));
+
+    // Comma-separated list: laptop dev server + phone on the Pi's LAN IP.
+    // Spaces, trailing slashes and empty entries are tolerated.
+    ::setenv("TASK_MANAGER_CORS_ORIGIN",
+             " http://localhost:5000 , http://192.168.0.23/ ,,",
+             1);
+    CHECK(allowedOrigins().size() == 2);
+    CHECK(isAllowedOrigin("http://localhost:5000"));
+    CHECK(isAllowedOrigin("http://192.168.0.23"));
+
+    // Still exact matching: no prefix, port, scheme or empty-header leaks.
+    CHECK(!isAllowedOrigin("http://192.168.0.23:8080"));
+    CHECK(!isAllowedOrigin("https://192.168.0.23"));
+    CHECK(!isAllowedOrigin("http://192.168.0.2"));
+    CHECK(!isAllowedOrigin("http://192.168.0.23.attacker"));
+    CHECK(!isAllowedOrigin(""));
+
+    ::unsetenv("TASK_MANAGER_CORS_ORIGIN");
+}
 
 DROGON_TEST(AuthInputValidation)
 {

@@ -1,6 +1,7 @@
 #include "AuthRoutes.h"
 
 #include "../controllers/AuthController.h"
+#include "../security/OriginPolicy.h"
 
 #include <drogon/HttpAppFramework.h>
 
@@ -66,10 +67,8 @@ drogon::HttpResponsePtr corsPreflightResponse(
     auto response = drogon::HttpResponse::newHttpResponse();
     response->addHeader("Vary", "Origin");
 
-    const auto *configuredOrigin = std::getenv("TASK_MANAGER_CORS_ORIGIN");
     const auto &origin = request->getHeader("origin");
-    if (!configuredOrigin || configuredOrigin[0] == '\0' ||
-        origin != configuredOrigin)
+    if (!security::isAllowedOrigin(origin))
     {
         response->setStatusCode(drogon::k403Forbidden);
         return response;

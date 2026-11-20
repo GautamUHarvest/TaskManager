@@ -62,12 +62,18 @@ class BlockerSocket {
   Timer? _heartbeat;
   int _attempt = 0;
   bool _closedByUs = false;
+  bool _authenticated = false;
 
   /// Blocker alerts pushed by the server. Broadcast, so the UI can listen
   /// without worrying about being the only subscriber.
   Stream<BlockerAlert> get alerts => _alerts.stream;
 
-  bool get isConnected => _socket?.readyState == html.WebSocket.OPEN;
+  /// True only once the server has accepted our token — not merely when the
+  /// socket is open. A socket with a rejected token still reports OPEN for the
+  /// moment before the server closes it, and treating that as "live" would let
+  /// the polling fallback stand down exactly when it is needed.
+  bool get isReady =>
+      _authenticated && _socket?.readyState == html.WebSocket.OPEN;
 
   Future<void> connect() async {
     if (_closedByUs) return;
@@ -132,6 +138,7 @@ class BlockerSocket {
         // still opens and is then closed by the server, so resetting at open
         // would turn a bad token into a 1-second reconnect loop.
         _attempt = 0;
+        _authenticated = true;
         return;
       }
       if (frameType != 'blocker') return;
@@ -153,6 +160,7 @@ class BlockerSocket {
   }
 
   void _scheduleReconnect() {
+    _authenticated = false;
     _heartbeat?.cancel();
     _heartbeat = null;
     if (_closedByUs || _reconnect != null) return;
@@ -168,6 +176,7 @@ class BlockerSocket {
   void _teardownSocket() {
     final socket = _socket;
     _socket = null;
+    _authenticated = false;
     _heartbeat?.cancel();
     _heartbeat = null;
     if (socket != null &&

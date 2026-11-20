@@ -39,7 +39,7 @@ flutter test        # (no tests committed yet)
 flutter analyze     # lints via flutter_lints (analysis_options.yaml)
 ```
 
-The web port must match the backend's `TASK_MANAGER_CORS_ORIGIN` (defaults to `http://localhost:5000`), and `API_BASE_URL` must match the backend listener.
+The web port must be in the backend's `TASK_MANAGER_CORS_ORIGIN` allowlist (`run-local.sh` defaults it to `http://localhost:5000` plus `http://<each IPv4 of the host>`), and `API_BASE_URL` must match the backend listener.
 
 ## Backend architecture
 
@@ -71,7 +71,11 @@ its `.cc` triggers the static registrar.
   `{"type":"auth","access_token":"<jwt>"}`. Browsers cannot set
   `Authorization` on a WS handshake, and a token in the URL would be logged.
   Unauthenticated sockets close after 10s; `Origin` is checked against
-  `TASK_MANAGER_CORS_ORIGIN` since CORS does not apply to WebSockets.
+  `TASK_MANAGER_CORS_ORIGIN` since CORS does not apply to WebSockets. That
+  variable is a **comma-separated allowlist** (parsed in header-only
+  [backend/security/OriginPolicy.h](backend/security/OriginPolicy.h), shared by
+  all four origin checks). Behind nginx it must still list the origin users
+  open the app from, or sockets upgrade and are closed straight away.
 - **Token verification is dispatched to the `auth-workers` queue**, never run
   inline — it reads SQLite, and `handleNewMessage` runs on the event loop.
 - [backend/services/BlockerHub](backend/services/BlockerHub.h) is a singleton
