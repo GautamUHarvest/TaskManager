@@ -80,3 +80,38 @@ class TaskStatusChip extends StatelessWidget {
     );
   }
 }
+
+/// A task's position in its project ("#21"), shown before the title so list
+/// order and the planning sheet's numbering can be matched at a glance.
+class TaskIndexBadge extends StatelessWidget {
+  const TaskIndexBadge({super.key, required this.index, this.large = false});
+
+  final int index;
+
+  /// Sized for the task-detail heading instead of a list row.
+  final bool large;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: EdgeInsets.symmetric(
+        horizontal: large ? 10 : 8,
+        vertical: large ? 4 : 2,
+      ),
+      decoration: BoxDecoration(
+        color: scheme.primaryContainer,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        '#$index',
+        style: TextStyle(
+          color: scheme.onPrimaryContainer,
+          fontSize: large ? 18 : 13,
+          fontWeight: FontWeight.w700,
+          fontFeatures: const [FontFeature.tabularFigures()],
+        ),
+      ),
+    );
+  }
+}

@@ -77,6 +77,9 @@ enum TaskDiscipline {
       );
 }
 
+/// Largest task index the backend accepts (TaskRules::kMaxTaskIndex).
+const int kMaxTaskIndex = 1000000;
+
 DateTime? _parseDate(Object? value) =>
     value is String ? DateTime.tryParse(value)?.toLocal() : null;
 
@@ -90,6 +93,7 @@ class Task {
     required this.status,
     this.type = TaskType.decide,
     this.discipline = TaskDiscipline.decide,
+    this.index,
     this.startAt,
     this.dueAt,
     this.assigneeId,
@@ -125,6 +129,7 @@ class Task {
       status: TaskStatus.fromWire(json['status'] as String?),
       type: TaskType.fromWire(json['type'] as String?),
       discipline: TaskDiscipline.fromWire(json['discipline'] as String?),
+      index: json['index'] as int?,
       startAt: _parseDate(json['start_at']),
       dueAt: _parseDate(json['due_at']),
       assigneeId: singleAssignee ??
@@ -145,6 +150,11 @@ class Task {
   final TaskStatus status;
   final TaskType type;
   final TaskDiscipline discipline;
+
+  /// Position within the project (the planning sheet's "#"). Project and
+  /// All Tasks lists come back sorted by it. Null only from a backend that
+  /// predates the field.
+  final int? index;
   final DateTime? startAt;
   final DateTime? dueAt;
   /// Primary assignee (first in [assigneeIds] when a list is returned). Kept

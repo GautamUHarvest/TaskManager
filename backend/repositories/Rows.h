@@ -19,7 +19,7 @@ namespace taskmanager::rows
 inline constexpr const char *kTaskColumns =
     "id, parent_task_id, project_id, title, description, status, type, "
     "discipline, due_at, start_at, created_by_id, version, created_at, "
-    "updated_at";
+    "updated_at, task_index";
 inline constexpr const char *kNoteColumns =
     "id, task_id, author_id, body, created_at, updated_at";
 inline constexpr const char *kCommentColumns =

@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
+#include <optional>
 #include <string>
 #include <unistd.h>
 
@@ -328,4 +329,78 @@ DROGON_TEST(TaskServiceProjectTasks)
     }));
     CHECK(service.projectTasks(1).size() == 1);
     CHECK_THROWS_AS(service.projectTasks(999), std::invalid_argument);
+}
+
+DROGON_TEST(TaskIndexOrdering)
+{
+    TempDatabase temp;
+    const auto aliceId = temp.addUser("alice");
+    UserRepository users(temp.database());
+    const auto alice = *users.findActive(aliceId);
+
+    TaskRepository tasks(temp.database());
+    ProjectRepository projects(temp.database());
+    NoteRepository notes(temp.database());
+    CommentRepository comments(temp.database());
+    TaskService service(tasks, projects, users, notes, comments);
+
+    NewProject newProject;
+    newProject.createdById = aliceId;
+    newProject.name = "Freezer";
+    const auto freezer = projects.create(newProject);
+
+    const auto add = [&](const std::string &title,
+                         std::optional<std::int64_t> projectId,
+                         std::optional<std::int64_t> index = std::nullopt) {
+        TaskInput input;
+        input.title = title;
+        input.projectId = projectId;
+        input.taskIndex = index;
+        return service.addTask(alice, input);
+    };
+
+    // Appended per project: the default project counts separately.
+    const auto a = add("A", freezer.id);
+    const auto b = add("B", freezer.id);
+    const auto unfiled = add("Unfiled", std::nullopt);
+    CHECK(a.taskIndex == 1);
+    CHECK(b.taskIndex == 2);
+    CHECK(unfiled.taskIndex == 1);
+
+    // An explicit index is kept as given, and the next append follows the
+    // largest index in the project.
+    const auto late = add("Late but first", freezer.id, 1);
+    CHECK(late.taskIndex == 1);
+    CHECK(add("C", freezer.id).taskIndex == 3);
+
+    // Created out of order, listed in index order (ties broken by id).
+    TaskUpdate renumber;
+    renumber.taskId = a.id;
+    renumber.taskIndex = 5;
+    CHECK(service.editTask(alice, renumber).taskIndex == 5);
+    const auto listed = service.projectTasks(freezer.id);
+    REQUIRE(listed.size() == 4);
+    CHECK(listed[0].id == late.id);  // 1
+    CHECK(listed[1].id == b.id);     // 2
+    CHECK(listed[2].title == "C");   // 3
+    CHECK(listed[3].id == a.id);     // 5
+
+    // Moving projects without an index appends to the new project; with one,
+    // the given index wins. Re-saving the same project keeps the index.
+    TaskUpdate move;
+    move.taskId = b.id;
+    move.projectId = 1;
+    CHECK(service.editTask(alice, move).taskIndex == 2);  // after "Unfiled"
+    move.projectId = 1;
+    CHECK(service.editTask(alice, move).taskIndex == 2);  // unchanged
+    move.projectId = freezer.id;
+    move.taskIndex = 9;
+    CHECK(service.editTask(alice, move).taskIndex == 9);
+
+    // Out-of-range indexes are rejected before touching the database.
+    TaskUpdate bad;
+    bad.taskId = a.id;
+    bad.taskIndex = 0;
+    CHECK_THROWS_AS(service.editTask(alice, bad), std::invalid_argument);
+    CHECK_THROWS_AS(add("Bad", freezer.id, -3), std::invalid_argument);
 }

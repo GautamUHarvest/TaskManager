@@ -355,6 +355,7 @@ class AuthController extends ChangeNotifier {
     bool clearDueAt = false,
     List<int>? assigneeIds,
     int? projectId,
+    int? index,
   }) =>
       _authorized((token) => data.updateTask(
             token: token,
@@ -371,6 +372,7 @@ class AuthController extends ChangeNotifier {
             clearDueAt: clearDueAt,
             assigneeIds: assigneeIds,
             projectId: projectId,
+            index: index,
           ));
 
   Future<void> deleteTask(int taskId) =>

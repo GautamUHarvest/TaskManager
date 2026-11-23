@@ -69,6 +69,7 @@ root.
   "discipline": "mechanical",
   "due_at": "2026-12-01T09:00:00Z",
   "start_at": "2026-11-20T09:00:00Z",
+  "index": 21,
   "assignee_id": 1,
   "created_by_id": 1,
   "version": 1,
@@ -76,6 +77,7 @@ root.
   "updated_at": "2026-11-16T10:52:37.433Z"
 }
 ```
+`index` is the task's position within its project (1–1,000,000); see the root `apirequirement.md` for the full rules.
 `status` is always one of: `todo`, `in_progress`, `blocked`, `done`, `cancelled`.
 
 `type` is one of: `design`, `test`, `decide`, `measure`, `select`, `buy`, `admin`, `code`, `make`, `data`, `doc`, `integrate`, `plan`, `review`. Defaults to `decide` ("to be decided") when omitted.
@@ -320,7 +322,7 @@ Errors: `401`.
 ---
 
 #### `GET /api/task/all`
-List every task, newest first. Auth: **Bearer**.
+List every task, grouped by project and in `index` order within each project. Auth: **Bearer**.
 
 Success `200 OK`:
 ```json

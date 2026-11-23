@@ -76,6 +76,7 @@ Project `id` `1` is the built-in **"Unidentified"** project; its `created_by_id`
   "discipline": "mechanical",
   "due_at": "2026-12-01T09:00:00Z",
   "start_at": "2026-11-20T09:00:00Z",
+  "index": 21,
   "assignee_ids": [1, 3],
   "created_by_id": 1,
   "version": 1,
@@ -84,6 +85,8 @@ Project `id` `1` is the built-in **"Unidentified"** project; its `created_by_id`
 }
 ```
 `assignee_ids` is an array of user ids (a task can have **zero or more** assignees); it is `[]` when the task is unassigned. `project_id` is always present and non-null.
+
+`index` is the task's position within its project (the planning sheet's "#"), a whole number from 1 to 1,000,000. Project and all-task lists are sorted by it. A task created without one is appended (largest index in its project + 1); a task moved to another project without one is appended to that project. Indexes are **not unique**: two tasks may share one while a list is being renumbered, and ties sort by `id`.
 `status` is always one of: `todo`, `in_progress`, `blocked`, `done`, `cancelled`.
 
 `type` is one of: `design`, `test`, `decide`, `measure`, `select`, `buy`, `admin`, `code`, `make`, `data`, `doc`, `integrate`, `plan`, `review`. Defaults to `decide` ("to be decided") when omitted.
@@ -242,6 +245,7 @@ Create a new task. Auth: **Bearer**. `created_by_id` is taken from the token (no
 | `assignee_ids` | integer[] | no | Array of existing active user ids (a task may have several assignees). Duplicates are de-duplicated; each must exist or `400`. A single integer is also accepted. Omitted/empty → unassigned. |
 | `parent_task_id` | integer | no | Must be an existing task id (for subtasks), else `400`. |
 | `project_id` | integer | no | Must be an existing project id, else `400`. Omitted → the default "Unidentified" project (`1`). |
+| `index` | integer | no | Position in the project, 1–1,000,000, else `400`. Omitted/`null` → appended (largest index in the project + 1). |
 
 Minimal request:
 ```json
@@ -285,6 +289,7 @@ Create a subtask under an existing parent task. Auth: **Bearer**. `created_by_id
 | `start_at` | string | no | Start-date timestamp (ISO-8601 recommended). |
 | `assignee_ids` | integer[] | no | Array of existing active user ids. A single integer is also accepted. Omitted/empty → unassigned. |
 | `project_id` | integer | no | Must be an existing project id, else `400`. Omitted → the default "Unidentified" project (`1`). |
+| `index` | integer | no | Position in the project, 1–1,000,000, else `400`. Omitted/`null` → appended (largest index in the project + 1). |
 
 Request:
 ```json
@@ -489,7 +494,8 @@ column. (`"description": null` erases the description, while omitting
 | `due_at` | string \| null | no | Timestamp string; `null` clears it. |
 | `start_at` | string \| null | no | Timestamp string; `null` clears it. |
 | `assignee_ids` | array of integers \| null | no | **Replaces** the whole assignee set. `[]` or `null` unassigns everyone. Each id must be an existing active user, else `400`. |
-| `project_id` | integer | no | Must be an existing project id, else `400`. Cannot be null — every task belongs to a project. |
+| `project_id` | integer | no | Must be an existing project id, else `400`. Cannot be null — every task belongs to a project. Changing it without `index` appends the task to the new project. |
+| `index` | integer | no | New position in the project, 1–1,000,000, else `400`. Cannot be null. |
 
 At least one field besides `task_id` must be present, else `400`.
 
@@ -610,7 +616,7 @@ Errors: `401`.
 ---
 
 #### `GET /api/task/all`
-List every task, newest first. Auth: **Bearer**.
+List every task, grouped by `project_id` and in `index` order within each project. Auth: **Bearer**.
 
 Success `200 OK`:
 ```json
@@ -643,7 +649,7 @@ Errors: `401`.
 ---
 
 #### `GET /api/task/project`
-List every task in one project — top-level tasks **and** subtasks — newest first. Auth: **Bearer**. The project id is passed as a **query parameter**, `project_id`. Used by the frontend's Projects view and its client-side CSV export.
+List every task in one project — top-level tasks **and** subtasks — in `index` order (ties by `id`). Auth: **Bearer**. The project id is passed as a **query parameter**, `project_id`. Used by the frontend's Projects view and its client-side CSV export.
 
 Request: `GET /api/task/project?project_id=2`
 

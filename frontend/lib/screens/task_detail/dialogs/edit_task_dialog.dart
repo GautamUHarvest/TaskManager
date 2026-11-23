@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart' show FilteringTextInputFormatter;
 import 'package:material_ui/material_ui.dart';
 
 import '../../../auth/auth_api.dart';
@@ -36,6 +37,7 @@ class _EditTaskDialogState extends State<EditTaskDialog>
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _titleController;
   late final TextEditingController _descriptionController;
+  late final TextEditingController _indexController;
   late TaskStatus _status;
   late TaskType _type;
   late TaskDiscipline _discipline;
@@ -51,6 +53,8 @@ class _EditTaskDialogState extends State<EditTaskDialog>
     _titleController = TextEditingController(text: task.title);
     _descriptionController =
         TextEditingController(text: task.description ?? '');
+    _indexController =
+        TextEditingController(text: task.index?.toString() ?? '');
     _status = task.status;
     _type = task.type;
     _discipline = task.discipline;
@@ -68,12 +72,28 @@ class _EditTaskDialogState extends State<EditTaskDialog>
   void dispose() {
     _titleController.dispose();
     _descriptionController.dispose();
+    _indexController.dispose();
     super.dispose();
+  }
+
+  /// Mirrors the backend rule (TaskRules: 1..1,000,000). Blank is allowed
+  /// only for a task that never had an index (an older backend).
+  String? _validateIndex(String? value) {
+    final text = value?.trim() ?? '';
+    if (text.isEmpty) {
+      return widget.task.index == null ? null : 'Enter a position';
+    }
+    final parsed = int.tryParse(text);
+    if (parsed == null || parsed < 1 || parsed > kMaxTaskIndex) {
+      return 'Use a number from 1 to $kMaxTaskIndex';
+    }
+    return null;
   }
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
     final description = _descriptionController.text.trim();
+    final index = int.tryParse(_indexController.text.trim());
     await runSubmit(() async {
       final updated = await widget.controller.updateTask(
         taskId: widget.task.id,
@@ -89,6 +109,9 @@ class _EditTaskDialogState extends State<EditTaskDialog>
         clearDueAt: _dueDate == null,
         assigneeIds: _assigneeIds.toList(growable: false),
         projectId: _projectId,
+        // Sent only when changed: an untouched index lets the server append
+        // the task to the end of a newly chosen project.
+        index: index != widget.task.index ? index : null,
       );
       if (mounted) Navigator.pop(context, updated);
     });
@@ -106,7 +129,31 @@ class _EditTaskDialogState extends State<EditTaskDialog>
       submitLabel: 'Save changes',
       onSubmit: _submit,
       children: [
-        TaskTitleField(controller: _titleController, autofocus: true),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 96,
+              child: TextFormField(
+                controller: _indexController,
+                decoration: const InputDecoration(
+                  labelText: 'Index',
+                  prefixText: '#',
+                ),
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                validator: _validateIndex,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TaskTitleField(
+                controller: _titleController,
+                autofocus: true,
+              ),
+            ),
+          ],
+        ),
         const SizedBox(height: 16),
         TaskDescriptionField(controller: _descriptionController),
         const SizedBox(height: 8),

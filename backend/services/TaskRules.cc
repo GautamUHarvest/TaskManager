@@ -172,6 +172,15 @@ void requirePositiveId(std::int64_t id, const char *field)
     }
 }
 
+void requireValidTaskIndex(std::int64_t index)
+{
+    if (index < 1 || index > kMaxTaskIndex)
+    {
+        throw std::invalid_argument("Field 'index' must be a whole number from 1 to " +
+                                    std::to_string(kMaxTaskIndex));
+    }
+}
+
 NewTask buildNewTask(std::int64_t createdById, const TaskInput &input)
 {
     const std::string title = text::trim(input.title);
@@ -191,6 +200,10 @@ NewTask buildNewTask(std::int64_t createdById, const TaskInput &input)
     {
         requirePositiveId(*input.projectId, "project_id");
     }
+    if (input.taskIndex)
+    {
+        requireValidTaskIndex(*input.taskIndex);
+    }
 
     NewTask task;
     task.createdById = createdById;
@@ -205,6 +218,7 @@ NewTask buildNewTask(std::int64_t createdById, const TaskInput &input)
     task.startAt = normalizeOptionalText(input.startAt, 64, "start_at");
     task.assigneeIds = normalizeAssigneeIds(input.assigneeIds);
     task.parentTaskId = input.parentTaskId;
+    task.taskIndex = input.taskIndex;
     return task;
 }
 
@@ -258,6 +272,10 @@ TaskUpdate normalizeTaskUpdate(TaskUpdate update)
     if (update.projectId)
     {
         requirePositiveId(*update.projectId, "project_id");
+    }
+    if (update.taskIndex)
+    {
+        requireValidTaskIndex(*update.taskIndex);
     }
     return update;
 }

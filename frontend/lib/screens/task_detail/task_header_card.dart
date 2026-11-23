@@ -45,6 +45,13 @@ class TaskHeaderCard extends StatelessWidget {
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (task.index != null) ...[
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: TaskIndexBadge(index: task.index!, large: true),
+                  ),
+                  const SizedBox(width: 12),
+                ],
                 Expanded(
                   child: Text(
                     task.title,

@@ -30,6 +30,7 @@ void main() {
       tasks: [
         Task(
           id: 3,
+          index: 21,
           parentTaskId: 2,
           title: 'Say "hi"',
           description: 'line one\nline two',
@@ -50,7 +51,7 @@ void main() {
     expect(
       csv,
       contains(
-        '7,"Rover, Mk II",Field bot,3,2,"Say ""hi""","line one\nline two",'
+        '7,"Rover, Mk II",Field bot,21,3,2,"Say ""hi""","line one\nline two",'
         'In progress,Code,Software,2026-01-05,2026-02-01,'
         'Alice Smith; User #9,Alice Smith,'
         '2026-01-04 09:30,2026-01-06 14:05\r\n',
@@ -76,7 +77,8 @@ void main() {
         Task(id: 1, title: '+SUM(A1)', status: TaskStatus.todo),
       ],
     );
-    expect(csv, contains("1,'=cmd,,1,,'+SUM(A1),"));
+    // No index (older backend) leaves the Index cell empty.
+    expect(csv, contains("1,'=cmd,,,1,,'+SUM(A1),"));
   });
 
   test('filename is a slug of the project name and the date', () {

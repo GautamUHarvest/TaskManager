@@ -40,6 +40,10 @@ class TaskCard extends StatelessWidget {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  if (task.index != null) ...[
+                    TaskIndexBadge(index: task.index!),
+                    const SizedBox(width: 10),
+                  ],
                   Expanded(
                     child: Text(
                       task.title,

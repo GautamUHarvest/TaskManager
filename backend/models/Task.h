@@ -44,6 +44,9 @@ struct TaskRecord
     std::int64_t version;
     std::string createdAt;
     std::string updatedAt;
+    // Position within the project (migration 008). Always set for rows the
+    // repository writes; optional only because the column is nullable.
+    std::optional<std::int64_t> taskIndex;
 };
 
 // Task fields exactly as the client sent them, before validation. The service
@@ -60,6 +63,7 @@ struct TaskInput
     std::vector<std::int64_t> assigneeIds;
     std::optional<std::int64_t> parentTaskId;
     std::optional<std::int64_t> projectId;
+    std::optional<std::int64_t> taskIndex;
 };
 
 // A validated task ready to insert.
@@ -76,6 +80,9 @@ struct NewTask
     std::optional<std::string> startAt;
     std::vector<std::int64_t> assigneeIds;
     std::optional<std::int64_t> parentTaskId;
+    // nullopt = append: the repository assigns MAX(task_index) + 1 within the
+    // project, in the same transaction as the insert.
+    std::optional<std::int64_t> taskIndex;
 };
 
 // Partial update of an existing task. A disengaged outer optional means "the
@@ -95,13 +102,16 @@ struct TaskUpdate
     std::optional<std::optional<std::string>> startAt;
     std::optional<std::vector<std::int64_t>> assigneeIds;
     std::optional<std::int64_t> projectId;
+    // Not nullable. When projectId moves the task and no index is given, the
+    // repository appends it to the end of the new project.
+    std::optional<std::int64_t> taskIndex;
 
     // True when nothing was supplied, so the caller can reject a no-op edit
     // instead of bumping the version for no reason.
     bool empty() const
     {
         return !title && !description && !status && !type && !discipline &&
-               !dueAt && !startAt && !assigneeIds && !projectId;
+               !dueAt && !startAt && !assigneeIds && !projectId && !taskIndex;
     }
 };
 

@@ -130,6 +130,7 @@ class DataApi {
     bool clearDueAt = false,
     List<int>? assigneeIds,
     int? projectId,
+    int? index,
   }) async {
     final body = <String, dynamic>{
       'task_id': taskId,
@@ -151,6 +152,7 @@ class DataApi {
         'due_at': dueAt.toUtc().toIso8601String(),
       if (assigneeIds != null) 'assignee_ids': assigneeIds,
       if (projectId != null) 'project_id': projectId,
+      if (index != null) 'index': index,
     };
     final json = await _client.post('/task/update', body, token: token);
     return Task.fromJson(json['task'] as Map<String, dynamic>);
@@ -287,7 +289,7 @@ class DataApi {
   Future<List<Task>> completedTasks(String token) =>
       _taskList('/task/completed', token);
 
-  /// Every task in one project, subtasks included, newest first.
+  /// Every task in one project, subtasks included, in index order.
   Future<List<Task>> projectTasks(String token, int projectId) =>
       _taskList('/task/project?project_id=$projectId', token);
 

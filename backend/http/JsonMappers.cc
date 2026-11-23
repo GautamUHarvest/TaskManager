@@ -54,6 +54,7 @@ Json::Value toJson(const TaskRecord &task)
     body["discipline"] = task.discipline;
     body["due_at"] = nullable(task.dueAt);
     body["start_at"] = nullable(task.startAt);
+    body["index"] = nullable(task.taskIndex);
     Json::Value assigneeIds(Json::arrayValue);
     for (const auto id : task.assigneeIds)
     {

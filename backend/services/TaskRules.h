@@ -41,6 +41,13 @@ std::string normalizeBody(const std::string &body);
 // Throws "Field '<field>' must be a positive id" when id <= 0.
 void requirePositiveId(std::int64_t id, const char *field);
 
+// Largest accepted task index; keeps a typo from parking a task far off the
+// end of a list.
+inline constexpr std::int64_t kMaxTaskIndex = 1000000;
+
+// Throws unless 1 <= index <= kMaxTaskIndex.
+void requireValidTaskIndex(std::int64_t index);
+
 // Validates raw client input into an insertable task.
 NewTask buildNewTask(std::int64_t createdById, const TaskInput &input);
 

@@ -10,6 +10,7 @@ const List<String> kProjectCsvColumns = [
   'Project ID',
   'Project Name',
   'Project Description',
+  'Index',
   'Task ID',
   'Parent Task ID',
   'Title',
@@ -55,6 +56,7 @@ String buildProjectCsv({
   for (final task in tasks) {
     rows.add([
       ...projectCells,
+      task.index?.toString() ?? '',
       '${task.id}',
       task.parentTaskId?.toString() ?? '',
       task.title,

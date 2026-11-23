@@ -27,6 +27,8 @@ TaskInput taskInput(const Json::Value &body)
     input.assigneeIds = optionalInt64Array(body, "assignee_ids");
     input.parentTaskId = optionalInt64(body, "parent_task_id");
     input.projectId = optionalInt64(body, "project_id");
+    // Absent or null: append to the end of the project.
+    input.taskIndex = optionalInt64(body, "index");
     return input;
 }
 
@@ -114,6 +116,12 @@ void TaskController::updateTask(const drogon::HttpRequestPtr &request,
             if (body.isMember("project_id"))
             {
                 update.projectId = requiredInt64(body, "project_id");
+            }
+            // Every task has an index, so null is rejected rather than read
+            // as "clear it".
+            if (body.isMember("index"))
+            {
+                update.taskIndex = requiredInt64(body, "index");
             }
             const auto updated = service_.editTask(actor, std::move(update));
             return jsonResponse(drogon::k200OK, taskEnvelope(updated));

@@ -13,6 +13,19 @@ namespace
 {
 constexpr const char *kNowTimestamp = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 
+// Lists that follow the planning order: by index within the project, ties
+// (and any legacy NULL index, last) broken by id.
+constexpr const char *kIndexOrder = "task_index IS NULL, task_index, id";
+
+// The index one past the end of project ?N. Evaluated inside the writing
+// transaction, so two inserts cannot be handed the same number.
+std::string nextIndexIn(int projectPlaceholder)
+{
+    const auto p = std::to_string(projectPlaceholder);
+    return "(SELECT COALESCE(MAX(t.task_index), 0) + 1 FROM tasks AS t "
+           "WHERE t.project_id = ?" + p + ")";
+}
+
 void insertAssignees(const db::Connection &connection,
                      std::int64_t taskId,
                      const std::vector<std::int64_t> &userIds)
@@ -30,11 +43,14 @@ void insertAssignees(const db::Connection &connection,
 
 std::int64_t insertTask(const db::Connection &connection, const NewTask &task)
 {
+    // ?11 is the requested index; NULL means "append to the project".
     db::Statement insert(
         connection,
         "INSERT INTO tasks (title, description, status, type, discipline, "
-        "due_at, start_at, parent_task_id, created_by_id, project_id) "
-        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)");
+        "due_at, start_at, parent_task_id, created_by_id, project_id, "
+        "task_index) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, " +
+            nextIndexIn(10) + "))");
     insert.bindText(1, task.title);
     insert.bindOptText(2, task.description);
     insert.bindText(3, task.status);
@@ -45,6 +61,7 @@ std::int64_t insertTask(const db::Connection &connection, const NewTask &task)
     insert.bindOptInt64(8, task.parentTaskId);
     insert.bindInt64(9, task.createdById);
     insert.bindInt64(10, task.projectId);
+    insert.bindOptInt64(11, task.taskIndex);
     insert.step();
     const std::int64_t taskId = connection.lastInsertRowId();
     insertAssignees(connection, taskId, task.assigneeIds);
@@ -84,6 +101,7 @@ std::string describeUpdate(const TaskUpdate &update)
     if (update.startAt) add("start_at");
     if (update.assigneeIds) add("assignees");
     if (update.projectId) add("project");
+    if (update.taskIndex) add("index");
     return "Updated " + summary;
 }
 }  // namespace
@@ -206,7 +224,27 @@ TaskRecord TaskRepository::update(const TaskUpdate &update,
             if (update.discipline) column("discipline");
             if (update.dueAt) column("due_at");
             if (update.startAt) column("start_at");
-            if (update.projectId) column("project_id");
+            int projectPlaceholder = 0;
+            if (update.projectId)
+            {
+                column("project_id");
+                projectPlaceholder = placeholders;
+            }
+            if (update.taskIndex)
+            {
+                column("task_index");
+            }
+            else if (update.projectId)
+            {
+                // Moved without an explicit index: keep it if the project is
+                // unchanged, otherwise append to the new project. SET
+                // expressions read the row's pre-update values, so project_id
+                // here is still the old one.
+                sql += ", task_index = CASE WHEN project_id = ?" +
+                       std::to_string(projectPlaceholder) +
+                       " THEN task_index ELSE " +
+                       nextIndexIn(projectPlaceholder) + " END";
+            }
             sql += " WHERE id = ?" + std::to_string(placeholders + 1);
 
             {
@@ -224,6 +262,8 @@ TaskRecord TaskRepository::update(const TaskUpdate &update,
                     statement.bindOptText(++bound, *update.startAt);
                 if (update.projectId)
                     statement.bindInt64(++bound, *update.projectId);
+                if (update.taskIndex)
+                    statement.bindInt64(++bound, *update.taskIndex);
                 statement.bindInt64(++bound, update.taskId);
                 statement.step();
             }
@@ -337,15 +377,18 @@ std::int64_t TaskRepository::countSubtasks(std::int64_t parentTaskId)
 std::vector<TaskRecord> TaskRepository::listSubtasks(std::int64_t parentTaskId)
 {
     auto connection = database_.connect();
-    return rows::queryTasks(connection,
-                            "WHERE parent_task_id = ?1 ORDER BY created_at, id",
-                            parentTaskId);
+    return rows::queryTasks(
+        connection,
+        std::string("WHERE parent_task_id = ?1 ORDER BY ") + kIndexOrder,
+        parentTaskId);
 }
 
 std::vector<TaskRecord> TaskRepository::listAll()
 {
     auto connection = database_.connect();
-    return rows::queryTasks(connection, "ORDER BY created_at DESC", std::nullopt);
+    return rows::queryTasks(connection,
+                            std::string("ORDER BY project_id, ") + kIndexOrder,
+                            std::nullopt);
 }
 
 std::vector<TaskRecord> TaskRepository::listByAssignee(std::int64_t userId)
@@ -369,9 +412,10 @@ std::vector<TaskRecord> TaskRepository::listCompleted()
 std::vector<TaskRecord> TaskRepository::listByProject(std::int64_t projectId)
 {
     auto connection = database_.connect();
-    return rows::queryTasks(connection,
-                            "WHERE project_id = ?1 ORDER BY created_at DESC",
-                            projectId);
+    return rows::queryTasks(
+        connection,
+        std::string("WHERE project_id = ?1 ORDER BY ") + kIndexOrder,
+        projectId);
 }
 
 }  // namespace taskmanager

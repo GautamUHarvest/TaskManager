@@ -23,6 +23,7 @@ TaskRecord task(const db::Statement &statement)
     task.version = statement.int64Column(11);
     task.createdAt = statement.textColumn(12);
     task.updatedAt = statement.textColumn(13);
+    task.taskIndex = statement.optInt64Column(14);
     return task;
 }
 
