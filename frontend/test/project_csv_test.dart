@@ -52,7 +52,7 @@ void main() {
       contains(
         '7,"Rover, Mk II",Field bot,3,2,"Say ""hi""","line one\nline two",'
         'In progress,Code,Software,2026-01-05,2026-02-01,'
-        'Alice Smith (EMP1); User #9,Alice Smith (EMP1),'
+        'Alice Smith; User #9,Alice Smith,'
         '2026-01-04 09:30,2026-01-06 14:05\r\n',
       ),
     );

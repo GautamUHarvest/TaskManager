@@ -14,9 +14,11 @@ namespace
 constexpr std::array<const char *, 5> kTaskStatuses = {
     "todo", "in_progress", "blocked", "done", "cancelled"};
 
-constexpr std::array<const char *, 12> kTaskTypes = {
+// Keep in sync with the CHECK in migrations/007_task_type_plan_review.sql.
+constexpr std::array<const char *, 14> kTaskTypes = {
     "design", "test", "decide", "measure", "select", "buy",
-    "admin", "code", "make", "data", "doc", "integrate"};
+    "admin", "code", "make", "data", "doc", "integrate",
+    "plan", "review"};
 
 constexpr std::array<const char *, 13> kTaskDisciplines = {
     "mechanical", "electronics", "software", "server_backend",

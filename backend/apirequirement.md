@@ -78,7 +78,7 @@ root.
 ```
 `status` is always one of: `todo`, `in_progress`, `blocked`, `done`, `cancelled`.
 
-`type` is one of: `design`, `test`, `decide`, `measure`, `select`, `buy`, `admin`, `code`, `make`, `data`, `doc`, `integrate`. Defaults to `decide` ("to be decided") when omitted.
+`type` is one of: `design`, `test`, `decide`, `measure`, `select`, `buy`, `admin`, `code`, `make`, `data`, `doc`, `integrate`, `plan`, `review`. Defaults to `decide` ("to be decided") when omitted.
 
 `discipline` is one of: `mechanical`, `electronics`, `software`, `server_backend`, `communications`, `embedded`, `control_systems`, `project_management`, `operations`, `payments`, `systems_integration`, `frontend`, `decide`. Defaults to `decide` when omitted.
 

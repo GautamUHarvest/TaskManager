@@ -34,7 +34,9 @@ enum TaskType {
   make('make', 'Make'),
   data('data', 'Data'),
   doc('doc', 'Doc'),
-  integrate('integrate', 'Integrate');
+  integrate('integrate', 'Integrate'),
+  plan('plan', 'Plan'),
+  review('review', 'Review');
 
   const TaskType(this.wire, this.label);
 

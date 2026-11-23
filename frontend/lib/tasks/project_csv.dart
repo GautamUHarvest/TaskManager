@@ -26,8 +26,8 @@ const List<String> kProjectCsvColumns = [
 ];
 
 /// Builds the CSV export of [project] and its [tasks] (RFC 4180: CRLF line
-/// endings, fields quoted when needed). People are written by name and
-/// employee id via [directory]; enums use their display labels.
+/// endings, fields quoted when needed). People are written by name via
+/// [directory]; enums use their display labels.
 ///
 /// A project with no tasks still yields one row carrying the project's own
 /// fields, so the file is never just a header.
@@ -91,13 +91,11 @@ String projectCsvFilename(Project project, {DateTime? now}) {
   return '$stem-${formatDate(now ?? DateTime.now())}.csv';
 }
 
+/// A person's name only (no employee id), falling back to `User #id` when
+/// the roster doesn't know them.
 String _person(UserDirectory directory, int id) {
   final AuthUser? user = directory.usersById[id];
-  if (user == null) return 'User #$id';
-  final name = UserDirectory.nameOf(user);
-  return user.employeeId.isEmpty || user.employeeId == name
-      ? name
-      : '$name (${user.employeeId})';
+  return user == null ? 'User #$id' : UserDirectory.nameOf(user);
 }
 
 String _date(DateTime? value) => value == null ? '' : formatDate(value);
