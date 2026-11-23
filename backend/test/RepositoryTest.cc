@@ -287,3 +287,45 @@ DROGON_TEST(TaskServicePermissions)
     CHECK_NOTHROW(service.deleteTask(alice, task.id));
     CHECK_THROWS_AS(service.taskDetail(task.id), NotFoundError);
 }
+
+DROGON_TEST(TaskServiceProjectTasks)
+{
+    TempDatabase temp;
+    const auto aliceId = temp.addUser("alice");
+    UserRepository users(temp.database());
+    const auto alice = *users.findActive(aliceId);
+
+    TaskRepository tasks(temp.database());
+    ProjectRepository projects(temp.database());
+    NoteRepository notes(temp.database());
+    CommentRepository comments(temp.database());
+    TaskService service(tasks, projects, users, notes, comments);
+
+    NewProject newProject;
+    newProject.createdById = aliceId;
+    newProject.name = "Rover";
+    const auto rover = projects.create(newProject);
+
+    TaskInput inRover;
+    inRover.title = "Chassis";
+    inRover.projectId = rover.id;
+    const auto parent = service.addTask(alice, inRover);
+    TaskInput child;
+    child.title = "Wheels";
+    child.projectId = rover.id;
+    const auto subtask = service.addSubtask(alice, parent.id, child);
+    TaskInput elsewhere;
+    elsewhere.title = "Unfiled";
+    service.addTask(alice, elsewhere);  // default project
+
+    const auto listed = service.projectTasks(rover.id);
+    REQUIRE(listed.size() == 2);  // subtasks included, other projects not
+    CHECK(std::all_of(listed.begin(), listed.end(), [&](const TaskRecord &t) {
+        return t.projectId == rover.id;
+    }));
+    CHECK(std::any_of(listed.begin(), listed.end(), [&](const TaskRecord &t) {
+        return t.id == subtask.id;
+    }));
+    CHECK(service.projectTasks(1).size() == 1);
+    CHECK_THROWS_AS(service.projectTasks(999), std::invalid_argument);
+}

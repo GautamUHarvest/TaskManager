@@ -211,4 +211,19 @@ void TaskController::completedTasks(const drogon::HttpRequestPtr &request,
         });
 }
 
+void TaskController::projectTasks(const drogon::HttpRequestPtr &request,
+                                  drogon::AdviceCallback &&callback)
+{
+    const auto projectIdParam = request->getParameter("project_id");
+    dispatcher_.authenticated(
+        request,
+        std::move(callback),
+        [this, projectIdParam](const UserRecord &) {
+            return jsonResponse(
+                drogon::k200OK,
+                tasksEnvelope(service_.projectTasks(
+                    requiredIdParam(projectIdParam, "project_id"))));
+        });
+}
+
 }  // namespace taskmanager

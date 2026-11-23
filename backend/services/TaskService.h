@@ -60,6 +60,9 @@ class TaskService
     TaskDetail taskDetail(std::int64_t taskId);
     std::vector<TaskRecord> allTasks();
     std::vector<TaskRecord> myTasks(const UserRecord &actor);
+    // Every task in the project, subtasks included, newest first. Throws
+    // std::invalid_argument (400) when the project does not exist.
+    std::vector<TaskRecord> projectTasks(std::int64_t projectId);
     std::vector<TaskRecord> completedTasks();
 
   private:

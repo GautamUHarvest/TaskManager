@@ -213,6 +213,9 @@ class AuthController extends ChangeNotifier {
 
   Future<List<Task>> completedTasks() => _authorized(data.completedTasks);
 
+  Future<List<Task>> projectTasks(int projectId) =>
+      _authorized((token) => data.projectTasks(token, projectId));
+
   Future<List<AuthUser>> allUsers() => _authorized(data.allUsers);
 
   /// Notifications the user has not yet dismissed. Server-returned items

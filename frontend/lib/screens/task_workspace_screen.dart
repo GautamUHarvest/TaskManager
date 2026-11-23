@@ -5,12 +5,14 @@ import '../auth/auth_controller.dart';
 import '../tasks/task_models.dart';
 import '../tasks/user_directory.dart';
 import 'profile_screen.dart';
+import 'project_tasks_screen.dart';
 import 'task_detail_screen.dart';
 import 'workspace/blocker_alert_listener.dart';
 import 'workspace/brand_mark.dart';
 import 'workspace/create_task_pane.dart';
 import 'workspace/dashboard_pane.dart';
 import 'workspace/notifications_dialog.dart';
+import 'workspace/projects_pane.dart';
 import 'workspace/task_list_pane.dart';
 import 'workspace/team_pane.dart';
 import 'workspace/workspace_drawer.dart';
@@ -66,13 +68,34 @@ class _TaskWorkspaceScreenState extends State<TaskWorkspaceScreen> {
 
   Future<void> _loadProjects() async {
     try {
-      final projects = await widget.controller.allProjects();
-      if (!mounted) return;
-      setState(() => _projects = projects);
+      await _fetchProjects();
     } catch (_) {
       // The Create Task pane then sends no project and the server applies
       // its "Unidentified" default, so task creation isn't blocked.
     }
+  }
+
+  /// Loads the projects and refreshes the shared lookup with them, so the
+  /// Projects pane and the project tags on task cards agree.
+  Future<List<Project>> _fetchProjects() async {
+    final projects = await widget.controller.allProjects();
+    if (mounted) setState(() => _projects = projects);
+    return projects;
+  }
+
+  /// Opens the full-screen task list (and CSV export) for [project].
+  Future<void> _openProject(Project project) {
+    return Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => ProjectTasksScreen(
+          controller: widget.controller,
+          project: project,
+          directory: _directory,
+          projectsById: _projectsById,
+          onOpenTask: _openTask,
+        ),
+      ),
+    );
   }
 
   Future<void> _loadUnreadCount() async {
@@ -199,6 +222,13 @@ class _TaskWorkspaceScreenState extends State<TaskWorkspaceScreen> {
           title: 'Completed',
           emptyMessage: 'No tasks have been completed yet.',
           loader: widget.controller.completedTasks,
+        );
+      case WorkspaceSection.projects:
+        return ProjectsPane(
+          key: const ValueKey('projects'),
+          loader: _fetchProjects,
+          directory: _directory,
+          onOpenProject: _openProject,
         );
       case WorkspaceSection.createTask:
         return CreateTaskPane(

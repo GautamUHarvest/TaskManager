@@ -36,6 +36,9 @@ class TaskController
                  drogon::AdviceCallback &&callback);
     void completedTasks(const drogon::HttpRequestPtr &request,
                         drogon::AdviceCallback &&callback);
+    // GET ?project_id=N: every task (subtasks included) in one project.
+    void projectTasks(const drogon::HttpRequestPtr &request,
+                      drogon::AdviceCallback &&callback);
 
   private:
     TaskService &service_;

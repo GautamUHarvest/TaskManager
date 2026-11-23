@@ -27,6 +27,11 @@ const List<({WorkspaceSection section, IconData icon, String label})>
     label: 'Completed',
   ),
   (
+    section: WorkspaceSection.projects,
+    icon: Icons.folder_outlined,
+    label: 'Projects',
+  ),
+  (
     section: WorkspaceSection.allUsers,
     icon: Icons.groups_outlined,
     label: 'Team',

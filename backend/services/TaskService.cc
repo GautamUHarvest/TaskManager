@@ -177,4 +177,11 @@ std::vector<TaskRecord> TaskService::completedTasks()
     return tasks_.listCompleted();
 }
 
+std::vector<TaskRecord> TaskService::projectTasks(std::int64_t projectId)
+{
+    rules::requirePositiveId(projectId, "project_id");
+    requireProject(projectId);
+    return tasks_.listByProject(projectId);
+}
+
 }  // namespace taskmanager

@@ -642,6 +642,19 @@ Errors: `401`.
 
 ---
 
+#### `GET /api/task/project`
+List every task in one project — top-level tasks **and** subtasks — newest first. Auth: **Bearer**. The project id is passed as a **query parameter**, `project_id`. Used by the frontend's Projects view and its client-side CSV export.
+
+Request: `GET /api/task/project?project_id=2`
+
+Success `200 OK`:
+```json
+{ "tasks": [ { "...": "task object" } ] }
+```
+Errors: `400` (missing / non-numeric `project_id`, or no such project), `401`.
+
+---
+
 #### `GET /api/task/detail`
 Return a single task together with its direct subtasks and its notes — for a task detail view. Auth: **Bearer**. The task id is passed as a **query parameter**, `task_id`.
 
@@ -703,6 +716,7 @@ Errors: `401`.
 | GET | `/api/task/all` | Bearer | — |
 | GET | `/api/task/mine` | Bearer | — |
 | GET | `/api/task/completed` | Bearer | — |
+| GET | `/api/task/project` | Bearer | query `project_id` → `{ tasks }` (subtasks included) |
 | GET | `/api/task/detail` | Bearer | query `task_id` → `{ task, subtasks, notes, comments }` |
 | POST | `/api/project/add` | Bearer | `name`(+ optional `description`) |
 | GET | `/api/project/all` | Bearer | — |

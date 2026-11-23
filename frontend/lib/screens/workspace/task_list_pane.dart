@@ -30,6 +30,8 @@ class TaskListPane extends StatefulWidget {
     required this.directory,
     required this.projectsById,
     required this.onOpenTask,
+    this.header,
+    this.actions = const [],
   });
 
   final String title;
@@ -38,6 +40,13 @@ class TaskListPane extends StatefulWidget {
   final UserDirectory directory;
   final Map<int, Project> projectsById;
   final OpenTaskCallback onOpenTask;
+
+  /// Optional content between the title row and the list (e.g. a project's
+  /// description).
+  final Widget? header;
+
+  /// Extra header buttons, shown before the refresh button.
+  final List<Widget> actions;
 
   @override
   State<TaskListPane> createState() => _TaskListPaneState();
@@ -74,17 +83,14 @@ class _TaskListPaneState extends State<TaskListPane> {
 
   /// [loaded] with local deletes and newer local patches applied.
   List<Task> _visibleTasks(List<Task> loaded) {
-    return loaded
-        .where((task) => !_deletedIds.contains(task.id))
-        .map((task) {
-          // Prefer a locally-patched copy only while the fetched one is
-          // genuinely older — the request behind it may have been in flight
-          // when the edit landed, or served from cache.
-          final patch = _patched[task.id];
-          if (patch == null || task.version >= patch.version) return task;
-          return patch;
-        })
-        .toList(growable: false);
+    return loaded.where((task) => !_deletedIds.contains(task.id)).map((task) {
+      // Prefer a locally-patched copy only while the fetched one is
+      // genuinely older — the request behind it may have been in flight
+      // when the edit landed, or served from cache.
+      final patch = _patched[task.id];
+      if (patch == null || task.version >= patch.version) return task;
+      return patch;
+    }).toList(growable: false);
   }
 
   Future<void> _open(Task task) async {
@@ -105,55 +111,71 @@ class _TaskListPaneState extends State<TaskListPane> {
 
   @override
   Widget build(BuildContext context) {
+    final header = widget.header;
+    final list = _buildList();
     return PaneScaffold(
       title: widget.title,
-      trailing: RefreshIconButton(onPressed: _reload),
-      child: FutureBuilder<List<Task>>(
-        future: _future,
-        builder: (context, snapshot) {
-          if (snapshot.hasData) _lastTasks = snapshot.data;
-          final loaded = _lastTasks;
-          final refreshing =
-              snapshot.connectionState == ConnectionState.waiting;
-
-          // Nothing to show yet: first load, or an error before any data
-          // arrived. Once a list has loaded we keep showing it through a
-          // refresh, so returning from a task's detail page lands straight
-          // back on the list with the change already applied.
-          if (loaded == null) {
-            if (refreshing) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            return MessageListView(
-              message: errorMessage(snapshot.error),
-              onRetry: _reload,
-            );
-          }
-
-          final tasks = _visibleTasks(loaded);
-          return RefreshingColumn(
-            refreshing: refreshing,
-            child: tasks.isEmpty
-                ? MessageListView(message: widget.emptyMessage)
-                : ListView.separated(
-                    itemCount: tasks.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 12),
-                    itemBuilder: (context, index) {
-                      final task = tasks[index];
-                      return TaskCard(
-                        task: task,
-                        assigneesLabel:
-                            widget.directory.assigneesSummary(task),
-                        createdByLabel: widget.directory
-                            .fullLabel(task.createdById, ifNull: 'Unknown'),
-                        projectName: widget.projectsById[task.projectId]?.name,
-                        onTap: () => _open(task),
-                      );
-                    },
-                  ),
-          );
-        },
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [...widget.actions, RefreshIconButton(onPressed: _reload)],
       ),
+      child: header == null
+          ? list
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                header,
+                const SizedBox(height: 16),
+                Expanded(child: list),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildList() {
+    return FutureBuilder<List<Task>>(
+      future: _future,
+      builder: (context, snapshot) {
+        if (snapshot.hasData) _lastTasks = snapshot.data;
+        final loaded = _lastTasks;
+        final refreshing = snapshot.connectionState == ConnectionState.waiting;
+
+        // Nothing to show yet: first load, or an error before any data
+        // arrived. Once a list has loaded we keep showing it through a
+        // refresh, so returning from a task's detail page lands straight
+        // back on the list with the change already applied.
+        if (loaded == null) {
+          if (refreshing) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          return MessageListView(
+            message: errorMessage(snapshot.error),
+            onRetry: _reload,
+          );
+        }
+
+        final tasks = _visibleTasks(loaded);
+        return RefreshingColumn(
+          refreshing: refreshing,
+          child: tasks.isEmpty
+              ? MessageListView(message: widget.emptyMessage)
+              : ListView.separated(
+                  itemCount: tasks.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 12),
+                  itemBuilder: (context, index) {
+                    final task = tasks[index];
+                    return TaskCard(
+                      task: task,
+                      assigneesLabel: widget.directory.assigneesSummary(task),
+                      createdByLabel: widget.directory
+                          .fullLabel(task.createdById, ifNull: 'Unknown'),
+                      projectName: widget.projectsById[task.projectId]?.name,
+                      onTap: () => _open(task),
+                    );
+                  },
+                ),
+        );
+      },
     );
   }
 }

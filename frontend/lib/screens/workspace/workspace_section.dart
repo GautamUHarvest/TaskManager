@@ -5,6 +5,7 @@ enum WorkspaceSection {
   allTasks,
   assignedToMe,
   completedTasks,
+  projects,
   createTask,
   profile,
   allUsers,

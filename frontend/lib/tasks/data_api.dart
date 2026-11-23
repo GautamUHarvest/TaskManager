@@ -287,6 +287,10 @@ class DataApi {
   Future<List<Task>> completedTasks(String token) =>
       _taskList('/task/completed', token);
 
+  /// Every task in one project, subtasks included, newest first.
+  Future<List<Task>> projectTasks(String token, int projectId) =>
+      _taskList('/task/project?project_id=$projectId', token);
+
   Future<List<Task>> _taskList(String path, String token) async {
     final json = await _client.get(path, token: token, noCache: true);
     final items = json['tasks'] as List<dynamic>? ?? const [];

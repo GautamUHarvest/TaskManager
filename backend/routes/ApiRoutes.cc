@@ -36,6 +36,7 @@ void registerApiRoutes(http::Router &router, const ApiControllers &c)
     router.get("/api/task/all", c.tasks, &TaskController::allTasks);
     router.get("/api/task/mine", c.tasks, &TaskController::myTasks);
     router.get("/api/task/completed", c.tasks, &TaskController::completedTasks);
+    router.get("/api/task/project", c.tasks, &TaskController::projectTasks);
 
     // Task notes and comments: /api/task/note*, /api/task/comment*
     router.post("/api/task/note", c.notes, &NoteController::addNote);
