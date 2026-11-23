@@ -473,6 +473,11 @@ token is valid but the user is not allowed to touch that record:
 | note | its author only | its author only |
 | comment | its author only | its author only |
 
+Exception: **any member may reassign any task.** A `POST /api/task/update`
+that carries `assignee_ids` and no other editable field is allowed for every
+authenticated user, even one who neither created nor is assigned to the task.
+Sending any other field alongside it falls back to the rule above.
+
 ---
 
 #### `POST /api/task/update`
@@ -511,7 +516,7 @@ Success `200 OK`:
 ```json
 { "task": { "...": "task object (with incremented version)" } }
 ```
-Errors: `400` (no fields, bad value, non-existent task/assignee/project), `401`, `403` (not the creator or an assignee).
+Errors: `400` (no fields, bad value, non-existent task/assignee/project), `401`, `403` (not the creator or an assignee, unless the request changes only `assignee_ids`).
 
 ---
 
@@ -713,7 +718,7 @@ Errors: `401`.
 | GET | `/api/notification/pending-blockers` | Bearer | — → unacknowledged blocker alerts for the caller |
 | POST | `/api/notification/ack` | Bearer | `notification_id` → stops it being replayed |
 | WS | `/ws/notifications` | first-message auth | see §6 |
-| POST | `/api/task/update` | Bearer | `task_id` + any editable field (partial; `null` clears) → creator or assignee |
+| POST | `/api/task/update` | Bearer | `task_id` + any editable field (partial; `null` clears) → creator or assignee; `assignee_ids` alone → anyone |
 | POST | `/api/task/delete` | Bearer | `task_id` → creator only; refuses while subtasks remain |
 | POST | `/api/task/note/update` | Bearer | `note_id`, `body` → author only |
 | POST | `/api/task/note/delete` | Bearer | `note_id` → author only |

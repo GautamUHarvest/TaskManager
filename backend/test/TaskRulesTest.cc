@@ -119,6 +119,7 @@ DROGON_TEST(TaskRulesPermissions)
     CHECK(rules::canEditTask(task, 1));   // creator
     CHECK(rules::canEditTask(task, 3));   // assignee
     CHECK(!rules::canEditTask(task, 4));  // neither
+    CHECK(rules::canAssignTask(task, 4));  // anyone may reassign
 
     CHECK(rules::canDeleteTask(task, 1));
     CHECK(!rules::canDeleteTask(task, 2));  // assignees cannot delete

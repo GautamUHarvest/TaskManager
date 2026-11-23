@@ -285,6 +285,11 @@ bool canEditTask(const TaskRecord &task, std::int64_t userId)
     return task.createdById == userId || isAssignee(task, userId);
 }
 
+bool canAssignTask(const TaskRecord & /*task*/, std::int64_t /*userId*/)
+{
+    return true;
+}
+
 bool canDeleteTask(const TaskRecord &task, std::int64_t userId)
 {
     return task.createdById == userId;

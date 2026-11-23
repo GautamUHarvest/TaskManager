@@ -25,6 +25,10 @@ class TaskPermissions {
   /// Creator or any assignee may edit, change status, and raise a blocker.
   bool get canEdit => isAssignee || isCreator;
 
+  /// Any signed-in member may reassign any task to anyone. The server allows
+  /// this only for an update that changes the assignees and nothing else.
+  bool get canAssign => true;
+
   /// Only the creator may delete.
   bool get canDelete => isCreator;
 }

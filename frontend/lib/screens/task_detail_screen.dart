@@ -13,6 +13,7 @@ import '../tasks/task_permissions.dart';
 import '../tasks/user_directory.dart';
 import 'task_detail/comments_section.dart';
 import 'task_detail/dialogs/add_subtask_dialog.dart';
+import 'task_detail/dialogs/assign_task_dialog.dart';
 import 'task_detail/dialogs/edit_task_dialog.dart';
 import 'task_detail/dialogs/raise_blocker_dialog.dart';
 import 'task_detail/dialogs/status_picker_dialog.dart';
@@ -179,6 +180,22 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
       ),
     );
     if (updated != null && mounted) _afterTaskSaved(updated, 'Task updated.');
+  }
+
+  /// Reassigns the task. Open to every member, not just its creator or
+  /// assignees; only the assignee list is sent.
+  Future<void> _assignTask(Task task) async {
+    final updated = await showDialog<Task>(
+      context: context,
+      builder: (context) => AssignTaskDialog(
+        controller: widget.controller,
+        task: task,
+        users: widget.directory.users,
+      ),
+    );
+    if (updated != null && mounted) {
+      _afterTaskSaved(updated, 'Assignees updated.');
+    }
   }
 
   /// Flags the task as blocked on another member, who is alerted at once if
@@ -422,6 +439,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                 onEditTask: () => _editTask(task),
                 onDeleteTask: () => _deleteTask(task),
                 onRaiseBlocker: () => _raiseBlocker(task),
+                onAssign: () => _assignTask(task),
               ),
               const SizedBox(height: 20),
               SubtasksSection(

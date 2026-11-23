@@ -113,6 +113,14 @@ struct TaskUpdate
         return !title && !description && !status && !type && !discipline &&
                !dueAt && !startAt && !assigneeIds && !projectId && !taskIndex;
     }
+
+    // True when the only thing being changed is who the task is assigned to.
+    // Any member may make that change (rules::canAssignTask).
+    bool onlyAssignees() const
+    {
+        return assigneeIds && !title && !description && !status && !type &&
+               !discipline && !dueAt && !startAt && !projectId && !taskIndex;
+    }
 };
 
 struct TaskNoteRecord

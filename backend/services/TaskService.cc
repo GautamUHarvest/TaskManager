@@ -81,7 +81,13 @@ TaskRecord TaskService::editTask(const UserRecord &actor, TaskUpdate update)
     {
         throw std::invalid_argument("Supply at least one field to update");
     }
-    if (!rules::canEditTask(requireTask(update.taskId), actor.id))
+    const auto task = requireTask(update.taskId);
+    // Reassigning is open to every member; any other change still needs the
+    // creator or an assignee.
+    const bool allowed = update.onlyAssignees()
+                             ? rules::canAssignTask(task, actor.id)
+                             : rules::canEditTask(task, actor.id);
+    if (!allowed)
     {
         throw ForbiddenError(
             "Only the task's creator or an assignee can edit it");

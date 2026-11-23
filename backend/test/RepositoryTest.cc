@@ -248,10 +248,12 @@ DROGON_TEST(TaskServicePermissions)
     const auto aliceId = temp.addUser("alice");
     const auto bobId = temp.addUser("bob");
     const auto carolId = temp.addUser("carol");
+    const auto daveId = temp.addUser("dave");
     UserRepository users(temp.database());
     const auto alice = *users.findActive(aliceId);
     const auto bob = *users.findActive(bobId);
     const auto carol = *users.findActive(carolId);
+    const auto dave = *users.findActive(daveId);
 
     TaskRepository tasks(temp.database());
     ProjectRepository projects(temp.database());
@@ -270,6 +272,16 @@ DROGON_TEST(TaskServicePermissions)
     CHECK(service.editTask(bob, rename).title == "Renamed");  // assignee
     CHECK_THROWS_AS(service.editTask(carol, rename), ForbiddenError);
     CHECK_THROWS_AS(service.deleteTask(bob, task.id), ForbiddenError);
+
+    // Carol is neither creator nor assignee, but anyone may reassign.
+    TaskUpdate reassign;
+    reassign.taskId = task.id;
+    reassign.assigneeIds = std::vector<std::int64_t>{bobId, carolId};
+    CHECK(service.editTask(carol, reassign).assigneeIds.size() == 2);
+    // Bundling another field with a reassignment still needs edit rights.
+    TaskUpdate mixed = reassign;
+    mixed.title = "Sneaky";
+    CHECK_THROWS_AS(service.editTask(dave, mixed), ForbiddenError);
 
     CHECK_THROWS_AS(service.raiseBlocker(bob, task.id, bobId, "m"),
                     std::invalid_argument);  // cannot block on yourself

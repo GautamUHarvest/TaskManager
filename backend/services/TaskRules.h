@@ -59,6 +59,10 @@ TaskUpdate normalizeTaskUpdate(TaskUpdate update);
 // A task may be edited, or have a blocker raised on it, by its creator or any
 // of its assignees.
 bool canEditTask(const TaskRecord &task, std::int64_t userId);
+// Any member may (re)assign any task to anyone, even if they neither created
+// it nor are assigned to it. Only covers updates that change assignees alone;
+// other fields still need canEditTask.
+bool canAssignTask(const TaskRecord &task, std::int64_t userId);
 // A task may be deleted only by its creator.
 bool canDeleteTask(const TaskRecord &task, std::int64_t userId);
 

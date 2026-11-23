@@ -20,6 +20,7 @@ class TaskHeaderCard extends StatelessWidget {
     required this.onEditTask,
     required this.onDeleteTask,
     required this.onRaiseBlocker,
+    required this.onAssign,
   });
 
   final Task task;
@@ -31,6 +32,7 @@ class TaskHeaderCard extends StatelessWidget {
   final VoidCallback onEditTask;
   final VoidCallback onDeleteTask;
   final VoidCallback onRaiseBlocker;
+  final VoidCallback onAssign;
 
   @override
   Widget build(BuildContext context) {
@@ -81,6 +83,13 @@ class TaskHeaderCard extends StatelessWidget {
                 TagChip(label: 'Discipline: ${task.discipline.label}'),
                 // Status changes and blockers follow the same rule as
                 // editing: creator or assignee.
+                // Anyone may reassign, not only the creator or assignees.
+                if (permissions.canAssign)
+                  OutlinedButton.icon(
+                    onPressed: onAssign,
+                    icon: const Icon(Icons.person_add_alt_1, size: 18),
+                    label: const Text('Assign'),
+                  ),
                 if (permissions.canEdit) ...[
                   OutlinedButton.icon(
                     onPressed: onChangeStatus,
